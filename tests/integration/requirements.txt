@@ -1,4 +1,3 @@
 ansible-core>=2.16.0
 proxmoxer>=2.3.0
 requests
-openssh_wrapper

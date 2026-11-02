@@ -1,0 +1,106 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+proxmox_node: pve01
+vm_storage: local-lvm
+vmid_full: "{{ integration_resource_ids[0] }}"
+vmid_defaults: "{{ integration_resource_ids[1] }}"
+
+vm_full_config:
+  node: "{{ proxmox_node }}"
+  vmid: "{{ vmid_full }}"
+  name: my-linux-vm-run
+  memory: 1024
+  cores: 2
+  sockets: 2
+  cpu: x86-64-v3
+  machine:
+    type: i440fx
+    version: "10.0"
+  ostype: win11
+  bios: seabios
+  efidisk:
+    storage: "{{ vm_storage }}"
+    efitype: 4m
+    pre_enrolled_keys: false
+  vga: std
+  ide2: none
+  scsihw: megasas
+  network:
+    - name: net0
+      model: e1000e
+      bridge: vmbr0
+      firewall: true
+      tag: 106
+    - name: net1
+      model: e1000e
+      bridge: vmbr0
+      firewall: true
+      tag: 106
+  disk:
+    - device: scsi0
+      storage: "{{ vm_storage }}"
+      size: 32G
+  state: present
+
+vm_full_ovmf_config: "{{ vm_full_config | combine({'bios': 'ovmf'}) }}"
+vm_full_immutable_attempt_config: >-
+  {{ vm_full_ovmf_config | combine({
+    'disk': [
+      {'device': 'scsi0', 'storage': 'missing-storage', 'size': '64G'}
+    ],
+    'efidisk': {
+      'storage': 'missing-storage',
+      'efitype': '2m',
+      'pre_enrolled_keys': true
+    }
+  }) }}
+vm_full_network_update_config: >-
+  {{ vm_full_ovmf_config | combine({
+    'vga': 'qxl',
+    'scsihw': 'virtio-scsi-single',
+    'network': [
+      {'name': 'net0', 'model': 'virtio', 'bridge': 'vmbr0', 'firewall': false, 'tag': 105},
+      {'name': 'net1', 'model': 'e1000e', 'bridge': 'vmbr0', 'firewall': true, 'tag': 106}
+    ]
+  }) }}
+
+vm_defaults_config:
+  node: "{{ proxmox_node }}"
+  vmid: "{{ vmid_defaults }}"
+  name: ansible-integration-tests
+  state: present
+
+vm_defaults_update_config:
+  node: "{{ proxmox_node }}"
+  vmid: "{{ vmid_defaults }}"
+  name: ansible-integration-tests
+  memory: 1024
+  cores: 4
+  sockets: 2
+  cpu: x86-64-v4
+  machine:
+    type: q35
+    version: latest
+  ostype: l26
+  bios: ovmf
+  vga: std
+  scsihw: megasas
+  ide2: none
+  network:
+    - name: net0
+      model: virtio
+      bridge: vmbr0
+      firewall: false
+      tag: 105
+  state: present
+
+vm_defaults_update_with_efidisk_config: >-
+  {{ vm_defaults_update_config | combine({
+    'efidisk': {
+      'storage': vm_storage,
+      'efitype': '4m',
+      'pre_enrolled_keys': true
+    }
+  }) }}

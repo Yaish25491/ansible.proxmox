@@ -8,11 +8,18 @@ OUTPUT="${SCRIPT_DIR}/integration_config.yml"
 
 : "${PROXMOX_HOST:?PROXMOX_HOST must be set}"
 
+if [[ -n "${PROXMOX_PASSWORD:-}" && ( -n "${PROXMOX_TOKEN_ID:-}" || -n "${PROXMOX_TOKEN_SECRET:-}" ) ]]; then
+    echo "PROXMOX_PASSWORD cannot be combined with PROXMOX_TOKEN_ID or PROXMOX_TOKEN_SECRET." >&2
+    exit 1
+fi
+
 if [[ -z "${PROXMOX_PASSWORD:-}" && ( -z "${PROXMOX_TOKEN_ID:-}" || -z "${PROXMOX_TOKEN_SECRET:-}" ) ]]; then
     echo "Set PROXMOX_PASSWORD or both PROXMOX_TOKEN_ID and PROXMOX_TOKEN_SECRET." >&2
     exit 1
 fi
 
+export PROXMOX_PORT="${PROXMOX_PORT:-8006}"
+export PROXMOX_CA_PATH="${PROXMOX_CA_PATH:-}"
 export PROXMOX_USER="${PROXMOX_USER:-}"
 export PROXMOX_PASSWORD="${PROXMOX_PASSWORD:-}"
 export PROXMOX_TOKEN_ID="${PROXMOX_TOKEN_ID:-}"
@@ -27,6 +34,8 @@ import sys
 
 variables = (
     "PROXMOX_HOST",
+    "PROXMOX_PORT",
+    "PROXMOX_CA_PATH",
     "PROXMOX_USER",
     "PROXMOX_PASSWORD",
     "PROXMOX_TOKEN_ID",
@@ -43,5 +52,3 @@ template = template.replace(
 )
 Path(sys.argv[2]).write_text(template, encoding="utf-8")
 PY
-
-

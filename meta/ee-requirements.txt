@@ -11,4 +11,3 @@
 # Do not delete this file even if the collection has no dependencies!
 proxmoxer>=2.3.0
 requests
-openssh_wrapper

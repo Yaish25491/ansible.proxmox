@@ -3,5 +3,6 @@ requires_ansible: ">=2.16.0"
 
 action_groups:
   proxmox:
+    - proxmox_api_connection_info
     - proxmox_vm
     - proxmox_vm_info

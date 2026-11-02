@@ -1,0 +1,518 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise the VM lifecycle
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Clean up before testing
+      ansible.builtin.include_tasks: cleanup.yml
+
+    - name: Predict full VM creation in check mode
+      ansible.proxmox.proxmox_vm: &vm_full_config_args
+        node: "{{ vm_full_config.node }}"
+        vmid: "{{ vm_full_config.vmid }}"
+        name: "{{ vm_full_config.name }}"
+        memory: "{{ vm_full_config.memory }}"
+        cores: "{{ vm_full_config.cores }}"
+        sockets: "{{ vm_full_config.sockets }}"
+        cpu: "{{ vm_full_config.cpu }}"
+        machine: "{{ vm_full_config.machine }}"
+        ostype: "{{ vm_full_config.ostype }}"
+        bios: "{{ vm_full_config.bios }}"
+        efidisk: "{{ vm_full_config.efidisk }}"
+        vga: "{{ vm_full_config.vga }}"
+        ide2: "{{ vm_full_config.ide2 }}"
+        scsihw: "{{ vm_full_config.scsihw }}"
+        network: "{{ vm_full_config.network }}"
+        disk: "{{ vm_full_config.disk }}"
+        state: "{{ vm_full_config.state }}"
+      check_mode: true
+      register: vm_full_check_mode
+
+    - name: Assert full VM check-mode result
+      ansible.builtin.assert:
+        that:
+          - vm_full_check_mode is changed
+
+    - name: Verify check mode did not create full VM
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_after_check_mode
+
+    - name: Assert full VM remains absent after check mode
+      ansible.builtin.assert:
+        that:
+          - vm_full_after_check_mode.vms | length == 0
+
+    - name: Create full VM with the full configuration
+      ansible.proxmox.proxmox_vm: *vm_full_config_args
+      register: vm_full_create
+
+    - name: Assert full VM was created
+      ansible.builtin.assert:
+        that:
+          - vm_full_create is changed
+
+    - name: Get full VM configuration after creation
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_info
+
+    - name: Assert full VM initial configuration
+      ansible.builtin.assert:
+        that:
+          - vm_full_info is not changed
+          - vm_full_info.vms | length == 1
+          - vm_full_info.vms[0].name == vm_full_config.name
+          - vm_full_info.vms[0].memory | int == vm_full_config.memory
+          - vm_full_info.vms[0].cores | int == vm_full_config.cores
+          - vm_full_info.vms[0].sockets | int == vm_full_config.sockets
+          - vm_full_info.vms[0].cpu == vm_full_config.cpu
+          - "'pc-i440fx-10.0' in vm_full_info.vms[0].machine"
+          - vm_full_info.vms[0].ostype == vm_full_config.ostype
+          - (vm_full_info.vms[0].bios | default('seabios')) == 'seabios'
+          - vm_full_info.vms[0].vga == vm_full_config.vga
+          - vm_full_info.vms[0].scsihw == vm_full_config.scsihw
+          - vm_full_info.vms[0].ide2 == 'none,media=cdrom'
+          - "'e1000e=' in vm_full_info.vms[0].net0"
+          - "'bridge=vmbr0' in vm_full_info.vms[0].net0"
+          - "'firewall=1' in vm_full_info.vms[0].net0"
+          - "'tag=106' in vm_full_info.vms[0].net0"
+          - "'e1000e=' in vm_full_info.vms[0].net1"
+          - "'tag=106' in vm_full_info.vms[0].net1"
+          - "'size=32G' in vm_full_info.vms[0].scsi0"
+          - "'efidisk0' not in vm_full_info.vms[0]"
+
+    - name: Create full VM idempotently
+      ansible.proxmox.proxmox_vm: *vm_full_config_args
+      register: vm_full_create_again
+
+    - name: Assert full VM creation is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_full_create_again is not changed
+
+    - name: Change full VM BIOS to OVMF
+      ansible.proxmox.proxmox_vm: &vm_full_ovmf_args
+        node: "{{ vm_full_ovmf_config.node }}"
+        vmid: "{{ vm_full_ovmf_config.vmid }}"
+        name: "{{ vm_full_ovmf_config.name }}"
+        memory: "{{ vm_full_ovmf_config.memory }}"
+        cores: "{{ vm_full_ovmf_config.cores }}"
+        sockets: "{{ vm_full_ovmf_config.sockets }}"
+        cpu: "{{ vm_full_ovmf_config.cpu }}"
+        machine: "{{ vm_full_ovmf_config.machine }}"
+        ostype: "{{ vm_full_ovmf_config.ostype }}"
+        bios: "{{ vm_full_ovmf_config.bios }}"
+        efidisk: "{{ vm_full_ovmf_config.efidisk }}"
+        vga: "{{ vm_full_ovmf_config.vga }}"
+        ide2: "{{ vm_full_ovmf_config.ide2 }}"
+        scsihw: "{{ vm_full_ovmf_config.scsihw }}"
+        network: "{{ vm_full_ovmf_config.network }}"
+        disk: "{{ vm_full_ovmf_config.disk }}"
+        state: "{{ vm_full_ovmf_config.state }}"
+      register: vm_full_ovmf
+
+    - name: Assert full VM BIOS update changed the VM
+      ansible.builtin.assert:
+        that:
+          - vm_full_ovmf is changed
+
+    - name: Get full VM configuration after BIOS update
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_ovmf_info
+
+    - name: Assert full VM EFI disk configuration
+      ansible.builtin.assert:
+        that:
+          - vm_full_ovmf_info.vms[0].bios == 'ovmf'
+          - "'local-lvm:' in vm_full_ovmf_info.vms[0].efidisk0"
+          - "'efitype=4m' in vm_full_ovmf_info.vms[0].efidisk0"
+          - "'pre-enrolled-keys=0' in vm_full_ovmf_info.vms[0].efidisk0"
+
+    - name: Reapply OVMF configuration idempotently
+      ansible.proxmox.proxmox_vm: *vm_full_ovmf_args
+      register: vm_full_ovmf_again
+
+    - name: Assert OVMF configuration is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_full_ovmf_again is not changed
+
+    - name: Attempt to change the existing VM disk and EFI disk
+      ansible.proxmox.proxmox_vm:
+        node: "{{ vm_full_immutable_attempt_config.node }}"
+        vmid: "{{ vm_full_immutable_attempt_config.vmid }}"
+        name: "{{ vm_full_immutable_attempt_config.name }}"
+        memory: "{{ vm_full_immutable_attempt_config.memory }}"
+        cores: "{{ vm_full_immutable_attempt_config.cores }}"
+        sockets: "{{ vm_full_immutable_attempt_config.sockets }}"
+        cpu: "{{ vm_full_immutable_attempt_config.cpu }}"
+        machine: "{{ vm_full_immutable_attempt_config.machine }}"
+        ostype: "{{ vm_full_immutable_attempt_config.ostype }}"
+        bios: "{{ vm_full_immutable_attempt_config.bios }}"
+        disk: "{{ vm_full_immutable_attempt_config.disk }}"
+        efidisk: "{{ vm_full_immutable_attempt_config.efidisk }}"
+        vga: "{{ vm_full_immutable_attempt_config.vga }}"
+        ide2: "{{ vm_full_immutable_attempt_config.ide2 }}"
+        scsihw: "{{ vm_full_immutable_attempt_config.scsihw }}"
+        network: "{{ vm_full_immutable_attempt_config.network }}"
+        state: "{{ vm_full_immutable_attempt_config.state }}"
+      register: vm_full_immutable_attempt
+
+    - name: Assert existing disk and EFI disk are not changed
+      ansible.builtin.assert:
+        that:
+          - vm_full_immutable_attempt is not changed
+
+    - name: Verify full VM disk and EFI disk remain unchanged
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_immutable_info
+
+    - name: Assert original disk and EFI disk are preserved
+      ansible.builtin.assert:
+        that:
+          - "'size=32G' in vm_full_immutable_info.vms[0].scsi0"
+          - "'local-lvm:' in vm_full_immutable_info.vms[0].efidisk0"
+          - "'efitype=4m' in vm_full_immutable_info.vms[0].efidisk0"
+
+    - name: Change full VM network settings
+      ansible.proxmox.proxmox_vm: &vm_full_network_update_args
+        node: "{{ vm_full_network_update_config.node }}"
+        vmid: "{{ vm_full_network_update_config.vmid }}"
+        name: "{{ vm_full_network_update_config.name }}"
+        memory: "{{ vm_full_network_update_config.memory }}"
+        cores: "{{ vm_full_network_update_config.cores }}"
+        sockets: "{{ vm_full_network_update_config.sockets }}"
+        cpu: "{{ vm_full_network_update_config.cpu }}"
+        machine: "{{ vm_full_network_update_config.machine }}"
+        ostype: "{{ vm_full_network_update_config.ostype }}"
+        bios: "{{ vm_full_network_update_config.bios }}"
+        efidisk: "{{ vm_full_network_update_config.efidisk }}"
+        vga: "{{ vm_full_network_update_config.vga }}"
+        ide2: "{{ vm_full_network_update_config.ide2 }}"
+        scsihw: "{{ vm_full_network_update_config.scsihw }}"
+        network: "{{ vm_full_network_update_config.network }}"
+        disk: "{{ vm_full_network_update_config.disk }}"
+        state: "{{ vm_full_network_update_config.state }}"
+      register: vm_full_network_update
+
+    - name: Assert full VM network update changed the VM
+      ansible.builtin.assert:
+        that:
+          - vm_full_network_update is changed
+
+    - name: Get full VM configuration after network update
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_network_info
+
+    - name: Assert full VM network changes
+      ansible.builtin.assert:
+        that:
+          - vm_full_network_info.vms[0].vga == vm_full_network_update_config.vga
+          - vm_full_network_info.vms[0].scsihw == vm_full_network_update_config.scsihw
+          - "'virtio=' in vm_full_network_info.vms[0].net0"
+          - "'tag=105' in vm_full_network_info.vms[0].net0"
+          - "'firewall=0' in vm_full_network_info.vms[0].net0"
+          - "'tag=106' in vm_full_network_info.vms[0].net1"
+
+    - name: Reapply full VM network settings idempotently
+      ansible.proxmox.proxmox_vm: *vm_full_network_update_args
+      register: vm_full_network_again
+
+    - name: Assert full VM network settings are idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_full_network_again is not changed
+
+    - name: Exercise full VM power-state transitions
+      ansible.builtin.include_tasks: powerstate.yml
+
+    - name: Create defaults VM with only its name and VMID configured
+      ansible.proxmox.proxmox_vm: &vm_defaults_args
+        node: "{{ vm_defaults_config.node }}"
+        vmid: "{{ vm_defaults_config.vmid }}"
+        name: "{{ vm_defaults_config.name }}"
+        power_cycle: 'on'
+        state: "{{ vm_defaults_config.state }}"
+      register: vm_defaults_create
+
+    - name: Assert defaults VM was created
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_create is changed
+
+    - name: Get defaults VM configuration after creation
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+      register: vm_defaults_info
+
+    - name: Assert defaults VM initial configuration
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_info is not changed
+          - vm_defaults_info.vms | length == 1
+          - vm_defaults_info.vms[0].name == vm_defaults_config.name
+
+    - name: Create defaults VM idempotently
+      ansible.proxmox.proxmox_vm: *vm_defaults_args
+      register: vm_defaults_create_again
+
+    - name: Assert defaults VM initial creation is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_create_again is not changed
+
+    - name: Stop defaults VM before applying offline updates
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+        power_cycle: 'off'
+      register: vm_defaults_stop
+
+    - name: Assert defaults VM was stopped
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_stop is changed
+
+    - name: Attempt OVMF update without required EFI disk settings
+      ansible.proxmox.proxmox_vm: &vm_defaults_update_args
+        node: "{{ vm_defaults_update_config.node }}"
+        vmid: "{{ vm_defaults_update_config.vmid }}"
+        name: "{{ vm_defaults_update_config.name }}"
+        memory: "{{ vm_defaults_update_config.memory }}"
+        cores: "{{ vm_defaults_update_config.cores }}"
+        sockets: "{{ vm_defaults_update_config.sockets }}"
+        cpu: "{{ vm_defaults_update_config.cpu }}"
+        machine: "{{ vm_defaults_update_config.machine }}"
+        ostype: "{{ vm_defaults_update_config.ostype }}"
+        bios: "{{ vm_defaults_update_config.bios }}"
+        vga: "{{ vm_defaults_update_config.vga }}"
+        scsihw: "{{ vm_defaults_update_config.scsihw }}"
+        ide2: "{{ vm_defaults_update_config.ide2 }}"
+        network: "{{ vm_defaults_update_config.network }}"
+        state: "{{ vm_defaults_update_config.state }}"
+      register: vm_defaults_update_without_efidisk
+      ignore_errors: true
+
+    - name: Assert OVMF update requires EFI disk settings
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_update_without_efidisk is failed
+          - "'bios is ovmf' in vm_defaults_update_without_efidisk.msg"
+          - "'efidisk' in vm_defaults_update_without_efidisk.msg"
+
+    - name: Change defaults VM defaults, machine, OS type, BIOS, and EFI disk
+      ansible.proxmox.proxmox_vm: &vm_defaults_update_with_efidisk_args
+        node: "{{ vm_defaults_update_with_efidisk_config.node }}"
+        vmid: "{{ vm_defaults_update_with_efidisk_config.vmid }}"
+        name: "{{ vm_defaults_update_with_efidisk_config.name }}"
+        memory: "{{ vm_defaults_update_with_efidisk_config.memory }}"
+        cores: "{{ vm_defaults_update_with_efidisk_config.cores }}"
+        sockets: "{{ vm_defaults_update_with_efidisk_config.sockets }}"
+        cpu: "{{ vm_defaults_update_with_efidisk_config.cpu }}"
+        machine: "{{ vm_defaults_update_with_efidisk_config.machine }}"
+        ostype: "{{ vm_defaults_update_with_efidisk_config.ostype }}"
+        bios: "{{ vm_defaults_update_with_efidisk_config.bios }}"
+        efidisk: "{{ vm_defaults_update_with_efidisk_config.efidisk }}"
+        vga: "{{ vm_defaults_update_with_efidisk_config.vga }}"
+        scsihw: "{{ vm_defaults_update_with_efidisk_config.scsihw }}"
+        ide2: "{{ vm_defaults_update_with_efidisk_config.ide2 }}"
+        network: "{{ vm_defaults_update_with_efidisk_config.network }}"
+        state: "{{ vm_defaults_update_with_efidisk_config.state }}"
+      register: vm_defaults_update
+
+    - name: Assert defaults VM update changed the VM
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_update is changed
+
+    - name: Get defaults VM configuration after update
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+      register: vm_defaults_updated_info
+
+    - name: Assert defaults VM updated configuration
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_updated_info.vms[0].memory | int == 1024
+          - vm_defaults_updated_info.vms[0].cores | int == 4
+          - vm_defaults_updated_info.vms[0].sockets | int == 2
+          - vm_defaults_updated_info.vms[0].cpu == vm_defaults_update_config.cpu
+          - vm_defaults_updated_info.vms[0].ostype == vm_defaults_update_config.ostype
+          - "'q35' in vm_defaults_updated_info.vms[0].machine"
+          - vm_defaults_updated_info.vms[0].bios == 'ovmf'
+          - "'efidisk0' in vm_defaults_updated_info.vms[0]"
+          - "'local-lvm:' in vm_defaults_updated_info.vms[0].efidisk0"
+          - "'efitype=4m' in vm_defaults_updated_info.vms[0].efidisk0"
+          - "'pre-enrolled-keys=1' in vm_defaults_updated_info.vms[0].efidisk0"
+          - vm_defaults_updated_info.vms[0].vga == vm_defaults_update_config.vga
+          - vm_defaults_updated_info.vms[0].scsihw == vm_defaults_update_config.scsihw
+          - vm_defaults_updated_info.vms[0].ide2 == 'none,media=cdrom'
+          - "'virtio=' in vm_defaults_updated_info.vms[0].net0"
+          - "'bridge=vmbr0' in vm_defaults_updated_info.vms[0].net0"
+          - "'firewall=0' in vm_defaults_updated_info.vms[0].net0"
+          - "'tag=105' in vm_defaults_updated_info.vms[0].net0"
+
+    - name: Reapply defaults VM update idempotently
+      ansible.proxmox.proxmox_vm: *vm_defaults_update_with_efidisk_args
+      register: vm_defaults_update_again
+
+    - name: Assert defaults VM update is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_update_again is not changed
+
+    - name: Start full VM before testing removal of a running VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+        power_cycle: 'on'
+
+    - name: Reject removal of running VM with default fail policy
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+        state: absent
+      check_mode: true
+      register: vm_running_delete_fail
+      ignore_errors: true
+
+    - name: Assert default policy rejects running VM removal
+      ansible.builtin.assert:
+        that:
+          - vm_running_delete_fail is failed
+
+    - name: Predict full VM removal in check mode
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+        power_cycle: 'off'
+        state: absent
+      check_mode: true
+      register: vm_full_remove_check
+
+    - name: Assert full VM check-mode removal is predicted
+      ansible.builtin.assert:
+        that:
+          - vm_full_remove_check is changed
+
+    - name: Verify check mode retained full VM
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_after_remove_check
+
+    - name: Assert full VM still exists after check mode
+      ansible.builtin.assert:
+        that:
+          - vm_full_after_remove_check.vms | length == 1
+
+    - name: Remove full VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+        power_cycle: 'off'
+        state: absent
+      register: vm_full_remove
+
+    - name: Assert full VM removal changed the VM
+      ansible.builtin.assert:
+        that:
+          - vm_full_remove is changed
+
+    - name: Get full VM state after removal
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+      register: vm_full_removed_info
+
+    - name: Remove full VM idempotently
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_full }}"
+        state: absent
+      register: vm_full_remove_again
+
+    - name: Assert full VM removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_full_remove_again is not changed
+
+    - name: Predict defaults VM removal in check mode
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+        state: absent
+      check_mode: true
+      register: vm_defaults_remove_check
+
+    - name: Assert defaults VM check-mode removal is predicted
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_remove_check is changed
+
+    - name: Verify check mode retained defaults VM
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+      register: vm_defaults_after_remove_check
+
+    - name: Assert defaults VM still exists after check mode
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_after_remove_check.vms | length == 1
+
+    - name: Remove defaults VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+        state: absent
+      register: vm_defaults_remove
+
+    - name: Assert defaults VM removal changed the VM
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_remove is changed
+
+    - name: Get defaults VM state after removal
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+      register: vm_defaults_removed_info
+
+    - name: Remove defaults VM idempotently
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_defaults }}"
+        state: absent
+      register: vm_defaults_remove_again
+
+    - name: Assert defaults VM removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - vm_defaults_remove_again is not changed
+
+  always:
+    - name: Clean up after testing
+      ansible.builtin.include_tasks: cleanup.yml

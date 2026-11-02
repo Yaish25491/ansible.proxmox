@@ -1,6 +1,5 @@
 proxmoxer>=2.3.0
 requests
-openssh_wrapper
 pytest>=9.1.1
 pytest-cov>=7.1.0
 PyYAML>=6.0

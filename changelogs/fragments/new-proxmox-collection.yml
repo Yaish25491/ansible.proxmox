@@ -1,0 +1,13 @@
+major_changes:
+  - >-
+    Introduce the new Ansible Proxmox collection with shared PVE and PBS client
+    handling.
+  - >-
+    PVE and PBS client handling for HTTPS password and HTTPS token
+    authentication, with composable connection documentation.
+  - >-
+    Reusable info, action, resource lifecycle, and asynchronous task
+    helpers.
+  - >-
+    Validate the effective Administrator role permissions on the relevant PVE
+    API path before VM operations.

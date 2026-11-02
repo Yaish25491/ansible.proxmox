@@ -1,0 +1,138 @@
+---
+- name: Predict powering on the stopped full VM
+  ansible.proxmox.proxmox_vm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    power_cycle: 'on'
+  check_mode: true
+  register: vm_power_on_check
+
+- name: Assert power on is predicted in check mode
+  ansible.builtin.assert:
+    that:
+      - vm_power_on_check is changed
+      - vm_power_on_check.task_upid is not defined
+
+- name: Verify full VM remains stopped after check mode
+  ansible.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+  register: vm_before_power_on
+
+- name: Assert check mode did not power on full VM
+  ansible.builtin.assert:
+    that:
+      - (vm_before_power_on.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'stopped'
+
+- name: Power on full VM without configuration changes
+  ansible.proxmox.proxmox_vm: &vm_power_on_args
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    power_cycle: 'on'
+  register: vm_power_on
+
+- name: Assert power on changed the VM
+  ansible.builtin.assert:
+    that:
+      - vm_power_on is changed
+      - vm_power_on.task_upid is defined
+
+- name: Power on full VM idempotently
+  ansible.proxmox.proxmox_vm: *vm_power_on_args
+  register: vm_power_on_again
+
+- name: Assert powered on VM is unchanged
+  ansible.builtin.assert:
+    that:
+      - vm_power_on_again is not changed
+
+- name: Update running full VM with a stop and restart
+  ansible.proxmox.proxmox_vm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    name: restart-vm
+    power_cycle: 'on'
+  register: vm_running_update
+
+- name: Assert running update changed the VM
+  ansible.builtin.assert:
+    that:
+      - vm_running_update is changed
+      - vm_running_update.task_upid is defined
+
+- name: Change full VM name while running using hotplug
+  ansible.proxmox.proxmox_vm: &vm_hotplug_args
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    name: hotplugged-vm
+    power_cycle: hotplug
+  register: vm_hotplug
+
+- name: Assert hotplug updated the VM
+  ansible.builtin.assert:
+    that:
+      - vm_hotplug is changed
+
+- name: Reapply hotplugged configuration idempotently
+  ansible.proxmox.proxmox_vm: *vm_hotplug_args
+  register: vm_hotplug_again
+
+- name: Assert hotplugged VM is unchanged
+  ansible.builtin.assert:
+    that:
+      - vm_hotplug_again is not changed
+
+- name: Verify full VM remained running after hotplug
+  ansible.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+  register: vm_after_hotplug
+
+- name: Assert hotplug did not power off the full VM
+  ansible.builtin.assert:
+    that:
+      - (vm_after_hotplug.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'running'
+
+- name: Restore full VM name with a stop and restart
+  ansible.proxmox.proxmox_vm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    name: "{{ vm_full_config.name }}"
+    power_cycle: 'on'
+  register: vm_restart_update
+
+- name: Assert restart update changed the VM
+  ansible.builtin.assert:
+    that:
+      - vm_restart_update is changed
+
+- name: Check full VM configuration and running power state
+  ansible.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+  register: vm_running_info
+
+- name: Assert full VM is running with the restored name
+  ansible.builtin.assert:
+    that:
+      - (vm_running_info.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'running'
+      - (vm_running_info.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).name == vm_full_config.name
+
+- name: Power off full VM without configuration changes
+  ansible.proxmox.proxmox_vm: &vm_power_off_args
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid_full }}"
+    power_cycle: 'off'
+  register: vm_power_off
+
+- name: Assert power off changed the VM
+  ansible.builtin.assert:
+    that:
+      - vm_power_off is changed
+      - vm_power_off.task_upid is defined
+
+- name: Power off full VM idempotently
+  ansible.proxmox.proxmox_vm: *vm_power_off_args
+  register: vm_power_off_again
+
+- name: Assert powered off VM is unchanged
+  ansible.builtin.assert:
+    that:
+      - vm_power_off_again is not changed
