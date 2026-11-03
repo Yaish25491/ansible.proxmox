@@ -1,0 +1,164 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject an unpersistable comment during creation in real and check modes
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: '0'
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: pool_zero_create
+  ignore_errors: true
+
+- name: Read pool after rejected creation
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_zero_create
+
+- name: Verify unpersistable comments did not create the pool
+  ansible.builtin.assert:
+    that:
+      - pool_zero_create.results | selectattr('failed', 'equalto', true) | list | length == 2
+      - pool_zero_create.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - pool_zero_create.results | map(attribute='msg') | select('search', 'cannot preserve') | list | length == 2
+      - pool_after_zero_create.pools == []
+
+- name: Predict creation of an empty pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: Original integration comment
+  check_mode: true
+  register: pool_create_check
+
+- name: Read pool after predicted creation
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_create_check
+
+- name: Verify check mode predicted creation without mutation
+  ansible.builtin.assert:
+    that:
+      - pool_create_check is changed
+      - pool_create_check.pool.poolid == pool_test_name
+      - pool_after_create_check is not changed
+      - pool_after_create_check.pools == []
+
+- name: Create empty pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: Original integration comment
+  register: pool_create
+
+- name: Read created pool in check mode
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  check_mode: true
+  register: pool_created_info
+
+- name: Verify created configuration independently
+  ansible.builtin.assert:
+    that:
+      - pool_create is changed
+      - pool_created_info is not changed
+      - pool_created_info.pools | length == 1
+      - pool_created_info.pools[0].comment == 'Original integration comment'
+      - pool_created_info.pools[0].members == []
+      - pool_create.pool == pool_created_info.pools[0]
+
+- name: Repeat unchanged pool creation using name alias
+  ansible.proxmox.proxmox_pool:
+    name: "{{ pool_test_name }}"
+    comment: Original integration comment
+  register: pool_repeat
+
+- name: Reject an unpersistable comment during updates in real and check modes
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: '0'
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: pool_zero_update
+  ignore_errors: true
+
+- name: Read existing comment after rejected updates
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_zero_update
+
+- name: Verify rejected comments preserved the existing pool
+  ansible.builtin.assert:
+    that:
+      - pool_zero_update.results | selectattr('failed', 'equalto', true) | list | length == 2
+      - pool_zero_update.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - pool_zero_update.results | map(attribute='msg') | select('search', 'cannot preserve') | list | length == 2
+      - pool_after_zero_update.pools[0].comment == 'Original integration comment'
+      - pool_after_zero_update.pools[0].members == []
+
+- name: Predict comment update
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: Updated integration comment
+  check_mode: true
+  register: pool_comment_check
+
+- name: Read actual comment after check mode
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_comment_check
+
+- name: Verify idempotency and comment check-mode immutability
+  ansible.builtin.assert:
+    that:
+      - pool_repeat is not changed
+      - pool_comment_check is changed
+      - pool_comment_check.pool.comment == 'Updated integration comment'
+      - pool_after_comment_check.pools[0].comment == 'Original integration comment'
+
+- name: Update pool comment
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: Updated integration comment
+  register: pool_comment_update
+
+- name: Read updated comment
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_updated_info
+
+- name: Preserve comment when omitted
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+  register: pool_omitted_comment
+
+- name: Clear comment explicitly
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: ''
+  register: pool_clear_comment
+
+- name: Read cleared comment
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_cleared_info
+
+- name: Repeat empty comment
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    comment: ''
+  register: pool_repeat_clear
+
+- name: List all pool summaries
+  ansible.proxmox.proxmox_pool_info:
+  register: pool_summaries
+
+- name: Verify update omission reset and summary behavior
+  ansible.builtin.assert:
+    that:
+      - pool_comment_update is changed
+      - pool_updated_info.pools[0].comment == 'Updated integration comment'
+      - pool_omitted_comment is not changed
+      - pool_clear_comment is changed
+      - pool_cleared_info.pools[0].comment | default('') == ''
+      - pool_repeat_clear is not changed
+      - pool_test_name in (pool_summaries.pools | map(attribute='poolid') | list)

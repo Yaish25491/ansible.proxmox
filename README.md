@@ -127,19 +127,21 @@ ansible-test units
 
 ### Integration tests
 
-Integration targets live under `tests/integration/targets/` and exercise
-modules against a live, configured Proxmox environment. The current PVE target
-is `proxmox_vm`; it requires a reachable server, a configured node and storage,
-and credentials with the required privileges. Generate
-`tests/integration/integration_config.yml` as described under Development
-checks, then run:
+Integration targets live under
+[`tests/integration/targets/`](tests/integration/targets/) and exercise modules
+against a live Proxmox environment. They require a reachable server, a configured
+node and storage, and credentials with the required privileges.
+Generate `tests/integration/integration_config.yml` with
+`tests/integration/generate_integration_config.sh`, then run:
 
 ```bash
 ansible-test integration --allow-unsupported
 ```
 
-`ansible-test` loads the integration configuration automatically. The VM target
-passes its `proxmox_api_host`, `proxmox_api_port`, `proxmox_api_user`,
+To run one target, use `ansible-test integration <target>`.
+
+`ansible-test` loads the integration configuration automatically. The targets
+pass the `proxmox_api_host`, `proxmox_api_port`, `proxmox_api_user`,
 `proxmox_api_password`, `proxmox_api_token_id`, `proxmox_api_token_secret`,
 `proxmox_ca_path`, and `proxmox_validate_certs` variables through
 `module_defaults` for `group/ansible.proxmox.proxmox`, including cleanup tasks.

@@ -1,0 +1,21 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+proxmox_node: pve01
+pool_test_storage: local-lvm
+pool_test_template_storage: local
+pool_test_template_architecture: amd64
+pool_test_name: "ansible-pool-{{ integration_resource_ids[0] }}-{{ integration_resource_ids[1] }}"
+pool_test_other: "{{ pool_test_name }}-other"
+pool_test_child: "{{ pool_test_name }}/child"
+pool_test_grandchild: "{{ pool_test_child }}/grandchild"
+pool_test_vmid: "{{ integration_resource_ids[0] }}"
+pool_test_ctid: "{{ integration_resource_ids[1] }}"
+pool_test_template_filename: "{{ pool_test_name }}-{{ pool_lxc_templates[-1].template }}"
+pool_test_template_volid: "{{ pool_test_template_storage }}:vztmpl/{{ pool_test_template_filename }}"
+pool_test_ids:
+  - "{{ pool_test_grandchild }}"
+  - "{{ pool_test_child }}"
+  - "{{ pool_test_other }}"
+  - "{{ pool_test_name }}"

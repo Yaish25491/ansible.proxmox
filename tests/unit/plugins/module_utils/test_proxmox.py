@@ -149,6 +149,24 @@ def test_fail_request_preserves_generic_api_errors(status, errors, parameters):
     }
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_fail_request_without_exception_preserves_message_and_completed_changes(changed):
+    module = FakeModule()
+    client = proxmox.ProxmoxClient(module)
+    if changed:
+        writer = DummyInfo(module, client=client)
+        writer.call_mutation("Creating a resource", Mock(return_value=None))
+    message = "Authenticated identity lacks required permissions."
+
+    with pytest.raises(FailJson) as failure:
+        client.fail_request(message)
+
+    expected = {"msg": message}
+    if changed:
+        expected["changed"] = True
+    assert failure.value.result == expected
+
+
 def test_call_api_optional_404_returns_none():
     exception = RuntimeError("resource not found")
     exception.status_code = 404
@@ -157,6 +175,39 @@ def test_call_api_optional_404_returns_none():
 
     assert info.call_api("Retrieving a VM", lookup, return_none_on_404=True) is None
     lookup.assert_called_once_with()
+
+
+def test_completed_mutation_retains_changed_on_failure_from_another_helper():
+    module = FakeModule()
+    client = proxmox.ProxmoxClient(module)
+    writer = DummyInfo(module, client=client)
+    reader = DummyInfo(module, client=client)
+    write = Mock(return_value=None)
+    read = Mock(side_effect=RuntimeError("read failed"))
+
+    assert writer.call_mutation("Creating a resource", write, value="desired") is None
+    write.assert_called_once_with(value="desired")
+    with pytest.raises(FailJson) as failure:
+        reader.call_api("Reading a resource", read)
+    assert failure.value.result["changed"] is True
+    assert failure.value.result["api_error"] == "read failed"
+
+
+def test_rejected_first_mutation_does_not_claim_a_change():
+    handler = DummyInfo(FakeModule())
+    write = Mock(side_effect=RuntimeError("write rejected"))
+    with pytest.raises(FailJson) as failure:
+        handler.call_mutation("Creating a resource", write)
+    assert failure.value.result.get("changed", False) is False
+
+
+def test_successful_reads_do_not_mark_the_client_changed():
+    handler = DummyInfo(FakeModule())
+    handler.call_api("Reading a resource", Mock(return_value={}))
+    read = Mock(side_effect=RuntimeError("read failed"))
+    with pytest.raises(FailJson) as failure:
+        handler.call_api("Reading another resource", read)
+    assert failure.value.result.get("changed", False) is False
 
 
 def test_argument_spec_merges_resource_arguments():
@@ -340,6 +391,25 @@ def test_pve_role_validation_reports_unexpected_permission_responses(monkeypatch
     assert failure.value.result["msg"] == (
         "Unexpected PVE permissions response for role Administrator on /vms."
     )
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("failure_kind", ["missing_role", "malformed_permissions", "missing_privileges"])
+def test_permission_validation_failures_preserve_completed_changes(monkeypatch, changed, failure_kind):
+    module = FakeModule(connection_params())
+    roles = [] if failure_kind == "missing_role" else [{"roleid": "Administrator", "privs": "Pool.Audit"}]
+    api = FakePveApi(roles=roles)
+    response = None if failure_kind == "malformed_permissions" else {}
+    monkeypatch.setattr(api.access.permissions, "get", lambda path: response)
+    client = proxmox.ProxmoxClient(module)
+    if changed:
+        DummyInfo(module, client=client).call_mutation("Creating a resource", Mock(return_value=None))
+
+    with pytest.raises(FailJson) as failure:
+        client.validate_pve_permissions(api, "/pool")
+    assert failure.value.result.get("changed", False) is changed
+    assert ("changed" in failure.value.result) is changed
+    assert "Administrator" in failure.value.result["msg"]
 
 
 def test_pve_role_validation_caches_roles_per_client():

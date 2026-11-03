@@ -1,0 +1,78 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Create nested child and grandchild pools
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ item }}"
+    comment: Nested integration pool
+  loop: ["{{ pool_test_child }}", "{{ pool_test_grandchild }}"]
+  register: pool_nested_create
+
+- name: Read selected grandchild using name alias
+  ansible.proxmox.proxmox_pool_info:
+    name: "{{ pool_test_grandchild }}"
+  register: pool_nested_info
+
+- name: Reject deleting a pool with nested children
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  check_mode: true
+  ignore_errors: true
+  register: pool_parent_delete
+
+- name: Verify nested pool details and parent protection
+  ansible.builtin.assert:
+    that:
+      - pool_nested_create is changed
+      - pool_nested_info.pools[0].poolid == pool_test_grandchild
+      - pool_nested_info.pools[0].comment == 'Nested integration pool'
+      - pool_parent_delete is failed
+      - "'not empty' in pool_parent_delete.msg"
+
+- name: Remove nested pools in dependency order
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ item }}"
+    state: absent
+  loop: ["{{ pool_test_grandchild }}", "{{ pool_test_child }}"]
+
+- name: Predict removal of now-empty primary pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  check_mode: true
+  register: pool_delete_check
+
+- name: Read pool after predicted deletion
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_delete_check
+
+- name: Delete empty primary pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  register: pool_delete
+
+- name: Repeat deletion
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  register: pool_repeat_delete
+
+- name: Read deleted pool
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_deleted_info
+
+- name: Verify deletion prediction actual removal and idempotency
+  ansible.builtin.assert:
+    that:
+      - pool_delete_check is changed
+      - pool_delete_check.pool == none
+      - pool_after_delete_check.pools | length == 1
+      - pool_delete is changed
+      - pool_delete.pool == none
+      - pool_repeat_delete is not changed
+      - pool_deleted_info.pools == []

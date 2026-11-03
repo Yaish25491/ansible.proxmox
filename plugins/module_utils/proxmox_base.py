@@ -90,6 +90,17 @@ class ProxmoxBase(ABC):
                 return None
             self.client.fail_request(operation, exception, parameters=kwargs)
 
+    def call_mutation(self, operation, function, *args, **kwargs):
+        """Call a mutation and remember its success on the shared client.
+
+        Later failures, including reads through another helper using this
+        client, retain changed=True. A rejected first write records no change.
+        Lifecycle callers must keep this hook outside check-mode paths.
+        """
+        result = self.call_api(operation, function, *args, **kwargs)
+        self.client.mark_changed()
+        return result
+
     def prepare_result(self, changed, resource=None, **values):
         """Assemble result data using this handler's resource key.
 

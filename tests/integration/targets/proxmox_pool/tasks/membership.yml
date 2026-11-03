@@ -1,0 +1,228 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Create a minimal stopped guest owned by this target
+  ansible.proxmox.proxmox_vm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ pool_test_vmid }}"
+    name: "{{ pool_test_name }}"
+
+- name: Create second pool for guest-move tests
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+
+- name: Predict guest and storage memberships
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  check_mode: true
+  register: pool_members_check
+
+- name: Read actual memberships after check mode
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_members_check
+
+- name: Verify membership check mode did not change the server
+  ansible.builtin.assert:
+    that:
+      - pool_members_check is changed
+      - pool_members_check.pool.members | length == 2
+      - pool_after_members_check.pools[0].members == []
+
+- name: Add guest and storage memberships
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  register: pool_members_add
+
+- name: Read each supported member type
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+    type: "{{ item }}"
+  loop: [qemu, lxc, storage]
+  register: pool_member_types
+
+- name: Verify guest and storage identities and empty container filter
+  ansible.builtin.assert:
+    that:
+      - pool_members_add is changed
+      - pool_member_types.results[0].pools[0].members | map(attribute='vmid') | list == [pool_test_vmid | int]
+      - pool_member_types.results[1].pools[0].members == []
+      - pool_member_types.results[2].pools[0].members | map(attribute='storage') | list == [pool_test_storage]
+
+- name: Repeat memberships in check mode
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  check_mode: true
+  register: pool_members_repeat
+
+- name: Reject deletion of nonempty pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  ignore_errors: true
+  register: pool_nonempty_delete
+
+- name: Reject deletion of nonempty pool in check mode
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    state: absent
+  check_mode: true
+  ignore_errors: true
+  register: pool_nonempty_delete_check
+
+- name: Predict clearing all membership lists
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: []
+    storage: []
+  check_mode: true
+  register: pool_clear_check
+
+- name: Read actual memberships after predicted removal
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_clear_check
+
+- name: Verify rejected deletions and predicted membership removal
+  ansible.builtin.assert:
+    that:
+      - pool_members_repeat is not changed
+      - pool_nonempty_delete is failed
+      - pool_nonempty_delete_check is failed
+      - "'not empty' in pool_nonempty_delete.msg"
+      - pool_clear_check is changed
+      - pool_clear_check.pool.members == []
+      - pool_after_clear_check.pools[0].members | length == 2
+
+- name: Remove guest membership while leaving omitted storage unchanged
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: []
+  register: pool_remove_guest
+
+- name: Read storage after removing guest membership
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_after_guest_removal
+
+- name: Add guest incrementally while preserving storage
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    membership_mode: present
+  register: pool_incremental_add
+
+- name: Reject moving guest without explicit allow_move
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    vms: ["{{ pool_test_vmid }}"]
+  ignore_errors: true
+  register: pool_move_rejected
+
+- name: Predict moving the guest to the second pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    vms: ["{{ pool_test_vmid }}"]
+    allow_move: true
+  check_mode: true
+  register: pool_move_check
+
+- name: Read source pool after predicted move
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_name }}"
+  register: pool_before_move
+
+- name: Verify omitted members and check-mode move behavior
+  ansible.builtin.assert:
+    that:
+      - pool_remove_guest is changed
+      - pool_after_guest_removal.pools[0].members | map(attribute='storage') | list == [pool_test_storage]
+      - pool_incremental_add is changed
+      - pool_move_rejected is failed
+      - "'allow_move=true' in pool_move_rejected.msg"
+      - pool_move_check is changed
+      - pool_before_move.pools[0].members | length == 2
+
+- name: Move guest to second pool
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    vms: ["{{ pool_test_vmid }}"]
+    allow_move: true
+  register: pool_move
+
+- name: Read source and destination after actual move
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ item }}"
+  loop: ["{{ pool_test_name }}", "{{ pool_test_other }}"]
+  register: pool_after_move
+
+- name: Verify actual move independently on both pools
+  ansible.builtin.assert:
+    that:
+      - pool_move is changed
+      - pool_after_move.results[0].pools[0].members | map(attribute='storage') | list == [pool_test_storage]
+      - pool_after_move.results[1].pools[0].members | map(attribute='vmid') | list == [pool_test_vmid | int]
+
+- name: Replace storage with moved guest through a mixed update
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    storage: []
+    allow_move: true
+  register: pool_mixed_update
+
+- name: Read both pools after mixed membership update
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ item }}"
+  loop: ["{{ pool_test_name }}", "{{ pool_test_other }}"]
+  register: pool_after_mixed_update
+
+- name: Verify storage removal and guest move back before incremental removal
+  ansible.builtin.assert:
+    that:
+      - pool_mixed_update is changed
+      - pool_after_mixed_update.results[0].pools[0].members | map(attribute='vmid') | list == [pool_test_vmid | int]
+      - pool_after_mixed_update.results[1].pools[0].members == []
+
+- name: Remove guest incrementally without deleting it
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    membership_mode: absent
+  register: pool_incremental_remove
+
+- name: Repeat removal of missing member
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_name }}"
+    vms: ["{{ pool_test_vmid }}"]
+    membership_mode: absent
+  register: pool_repeat_remove
+
+- name: Read emptied pools
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ item }}"
+  loop: ["{{ pool_test_name }}", "{{ pool_test_other }}"]
+  register: pool_empty_members
+
+- name: Verify underlying VM was preserved
+  ansible.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ pool_test_vmid }}"
+  register: pool_preserved_vm
+
+- name: Verify exact and incremental updates preserve underlying resources
+  ansible.builtin.assert:
+    that:
+      - pool_mixed_update is changed
+      - pool_incremental_remove is changed
+      - pool_repeat_remove is not changed
+      - pool_empty_members.results[0].pools[0].members == []
+      - pool_empty_members.results[1].pools[0].members == []
+      - pool_preserved_vm.vms | length == 1
