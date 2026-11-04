@@ -1,0 +1,92 @@
+---
+- name: Select a random VM identifier for power-state tests
+  ansible.builtin.set_fact:
+    powerstate_vmid: "{{ integration_resource_ids[0] }}"
+
+- name: Exercise VM power-state modules independently
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Verify the random VM identifier is unused
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ powerstate_vmid }}"
+      register: powerstate_existing_vm
+
+    - name: Refuse to modify an existing VM
+      ansible.builtin.assert:
+        that:
+          - powerstate_existing_vm.vms | length == 0
+        fail_msg: The random VM identifier is already in use; rerun to select another identifier.
+
+    - name: Create the random power-state test VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ powerstate_vmid }}"
+        name: "ansible-powerstate-{{ powerstate_vmid }}"
+        memory: 512
+        cores: 1
+        cpu: kvm64
+        ostype: l26
+        disk:
+          - device: scsi0
+            storage: local-lvm
+            size: 1G
+        state: present
+      register: powerstate_vm_create
+
+    - name: Assert the test VM was created
+      ansible.builtin.assert:
+        that:
+          - powerstate_vm_create is changed
+
+    - name: Read the initial power state
+      ansible.proxmox.proxmox_vm_powerstate_info:
+        vmid: "{{ powerstate_vmid }}"
+      register: powerstate_initial
+
+    - name: Assert guest preparation left the VM stopped
+      ansible.builtin.assert:
+        that:
+          - powerstate_initial is not changed
+          - powerstate_initial.powerstate == 'stopped'
+
+    - name: Exercise every power action and its repeated-run for idempotency
+      ansible.builtin.include_tasks: powerstate_action.yml
+      loop:
+        - {action: start, expected: running, repeat: true}
+        - {action: pause, expected: paused, repeat: true}
+        - {action: resume, expected: running, repeat: true}
+        - {action: hibernate, expected: suspended, repeat: true}
+        - {action: resume, expected: running}
+        - {action: reset, expected: running, repeat: true, repeat_changed: true}
+        # TODO: run tests on vm with operating system installed.
+        # reboot will fail on vm without an operating system
+        - {action: reboot, expected: running, ignore_failure: true}
+        # TODO: run tests on vm with operating system installed.
+        # shutdown will fail on vm without an operating system and will remain "running"
+        - {action: shutdown, expected: running, ignore_failure: true}
+        - {action: stop, expected: stopped, repeat: true}
+      loop_control:
+        loop_var: power_case
+        label: "{{ power_case.action }}"
+
+  always:
+    - name: Remove only the VM created by this target
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ powerstate_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      register: powerstate_vm_delete
+      when:
+        - powerstate_vm_create is defined
+        - powerstate_vm_create is changed

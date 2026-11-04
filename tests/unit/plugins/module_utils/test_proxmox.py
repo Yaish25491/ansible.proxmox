@@ -160,15 +160,29 @@ def test_call_api_optional_404_returns_none():
 
 
 def test_argument_spec_merges_resource_arguments():
+    """Verify resource arguments include connection and shared task options."""
     spec = proxmox.proxmox_resource_argument_spec({"name": {"type": "str"}})
 
     assert "api_service" not in spec
     assert set(spec) == {
         "api_host", "api_user", "api_password", "api_token_id", "api_token_secret",
         "api_port", "validate_certs", "ca_path", "api_timeout", "api_otp", "state", "name",
+        "task_timeout",
     }
     assert spec["state"]["choices"] == ["present", "absent"]
     assert spec["name"] == {"type": "str"}
+
+
+def test_task_argument_spec_is_opt_in_and_preserves_overrides():
+    """Verify task options do not affect read-only connection arguments."""
+    spec = proxmox.proxmox_task_argument_spec({"name": {"type": "str"}})
+
+    assert spec["task_timeout"] == {"type": "int"}
+    assert spec["name"] == {"type": "str"}
+    assert "task_timeout" not in proxmox.proxmox_argument_spec()
+    assert proxmox.proxmox_task_argument_spec({"task_timeout": {"type": "int", "default": 900}})[
+        "task_timeout"
+    ] == {"type": "int", "default": 900}
 
 
 @pytest.mark.parametrize(
@@ -760,6 +774,53 @@ class FakeClient:
 
 class DummyTaskModule(ProxmoxTask):
     pass
+
+
+@pytest.mark.parametrize("check_mode", [False, True])
+def test_task_timeout_is_validated_before_api_work(check_mode):
+    """Verify negative task timeouts fail during handler construction.
+
+    Args:
+        check_mode: Whether the handler is being constructed for a dry run.
+    """
+    module = FakeModule({"task_timeout": -1}, check_mode=check_mode)
+    client = FakeClient(object())
+
+    with pytest.raises(FailJson) as failure:
+        DummyTaskModule(module, client=client)
+
+    assert failure.value.result["msg"] == "task_timeout must be zero or greater"
+
+
+@pytest.mark.parametrize("configured,explicit,expected", [
+    (None, None, 300), (42, None, 42), (0, None, 0),
+    (42, 10, 10), (0, 10, 10), (42, 0, 0),
+])
+def test_wait_for_task_resolves_shared_timeout(configured, explicit, expected, monkeypatch):
+    """Verify task timeout precedence and unlimited waiting.
+
+    Args:
+        configured: Module-level task timeout, or None when omitted.
+        explicit: Timeout supplied directly to the task waiter.
+        expected: Effective timeout in seconds.
+        monkeypatch: Pytest fixture for replacing clock and sleep functions.
+    """
+    statuses = [{"status": "running"}, {"status": "stopped", "exitstatus": "OK"}]
+    task = DummyTaskModule(
+        FakeModule({"task_timeout": configured}), client=FakeClient(FakeTaskApi(statuses)),
+    )
+    clock = Mock(side_effect=[100, 100 + expected])
+    monkeypatch.setattr(proxmox_task.time, "monotonic", clock)
+    monkeypatch.setattr(proxmox_task.time, "sleep", Mock())
+
+    if expected == 0:
+        assert task.wait_for_task("UPID:pve01:task", timeout=explicit)["exitstatus"] == "OK"
+        clock.assert_not_called()
+    else:
+        with pytest.raises(FailJson) as failure:
+            task.wait_for_task("UPID:pve01:task", timeout=explicit)
+        assert failure.value.result["msg"] == "Timed out waiting for Proxmox task"
+        assert failure.value.result["timeout"] == expected
 
 
 def test_wait_for_task_rejects_negative_timeout():

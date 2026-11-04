@@ -115,6 +115,7 @@ env.bak/
 venv.bak/
 .vscode/
 .ansible/
+.agents/
 
 # Spyder project settings
 .spyderproject

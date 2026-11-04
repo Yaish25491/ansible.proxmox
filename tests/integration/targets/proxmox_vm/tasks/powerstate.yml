@@ -1,5 +1,5 @@
 ---
-- name: Predict powering on the stopped full VM
+- name: Predict powering on the stopped full VM  # noqa: args[module]
   ansible.proxmox.proxmox_vm:
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
@@ -7,13 +7,19 @@
   check_mode: true
   register: vm_power_on_check
 
+- name: Read power state after predicting power on  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_power_on_check_state
+
 - name: Assert power on is predicted in check mode
   ansible.builtin.assert:
     that:
       - vm_power_on_check is changed
       - vm_power_on_check.task_upid is not defined
+      - vm_power_on_check_state.powerstate == 'stopped'
 
-- name: Verify full VM remains stopped after check mode
+- name: Verify full VM remains stopped after check mode  # noqa: args[module]
   ansible.proxmox.proxmox_vm_info:
     node: "{{ proxmox_node }}"
   register: vm_before_power_on
@@ -23,29 +29,41 @@
     that:
       - (vm_before_power_on.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'stopped'
 
-- name: Power on full VM without configuration changes
+- name: Power on full VM without configuration changes  # noqa: args[module]
   ansible.proxmox.proxmox_vm: &vm_power_on_args
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
     power_cycle: 'on'
   register: vm_power_on
 
+- name: Read power state after power on  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_power_on_state
+
 - name: Assert power on changed the VM
   ansible.builtin.assert:
     that:
       - vm_power_on is changed
       - vm_power_on.task_upid is defined
+      - vm_power_on_state.powerstate == 'running'
 
-- name: Power on full VM idempotently
+- name: Power on full VM idempotently  # noqa: args[module]
   ansible.proxmox.proxmox_vm: *vm_power_on_args
   register: vm_power_on_again
+
+- name: Read power state after repeated power on  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_power_on_again_state
 
 - name: Assert powered on VM is unchanged
   ansible.builtin.assert:
     that:
       - vm_power_on_again is not changed
+      - vm_power_on_again_state.powerstate == 'running'
 
-- name: Update running full VM with a stop and restart
+- name: Update running full VM with a stop and restart  # noqa: args[module]
   ansible.proxmox.proxmox_vm:
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
@@ -53,13 +71,19 @@
     power_cycle: 'on'
   register: vm_running_update
 
+- name: Read power state after running VM update  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_running_update_state
+
 - name: Assert running update changed the VM
   ansible.builtin.assert:
     that:
       - vm_running_update is changed
       - vm_running_update.task_upid is defined
+      - vm_running_update_state.powerstate == 'running'
 
-- name: Change full VM name while running using hotplug
+- name: Change full VM name while running using hotplug  # noqa: args[module]
   ansible.proxmox.proxmox_vm: &vm_hotplug_args
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
@@ -67,21 +91,33 @@
     power_cycle: hotplug
   register: vm_hotplug
 
+- name: Read power state after hotplug update  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_hotplug_state
+
 - name: Assert hotplug updated the VM
   ansible.builtin.assert:
     that:
       - vm_hotplug is changed
+      - vm_hotplug_state.powerstate == 'running'
 
-- name: Reapply hotplugged configuration idempotently
+- name: Reapply hotplugged configuration idempotently  # noqa: args[module]
   ansible.proxmox.proxmox_vm: *vm_hotplug_args
   register: vm_hotplug_again
+
+- name: Read power state after repeated hotplug update  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_hotplug_again_state
 
 - name: Assert hotplugged VM is unchanged
   ansible.builtin.assert:
     that:
       - vm_hotplug_again is not changed
+      - vm_hotplug_again_state.powerstate == 'running'
 
-- name: Verify full VM remained running after hotplug
+- name: Verify full VM remained running after hotplug  # noqa: args[module]
   ansible.proxmox.proxmox_vm_info:
     node: "{{ proxmox_node }}"
   register: vm_after_hotplug
@@ -91,7 +127,7 @@
     that:
       - (vm_after_hotplug.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'running'
 
-- name: Restore full VM name with a stop and restart
+- name: Restore full VM name with a stop and restart  # noqa: args[module]
   ansible.proxmox.proxmox_vm:
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
@@ -99,12 +135,18 @@
     power_cycle: 'on'
   register: vm_restart_update
 
+- name: Read power state after restoring VM configuration  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_restart_update_state
+
 - name: Assert restart update changed the VM
   ansible.builtin.assert:
     that:
       - vm_restart_update is changed
+      - vm_restart_update_state.powerstate == 'running'
 
-- name: Check full VM configuration and running power state
+- name: Check full VM configuration and running power state  # noqa: args[module]
   ansible.proxmox.proxmox_vm_info:
     node: "{{ proxmox_node }}"
   register: vm_running_info
@@ -115,24 +157,36 @@
       - (vm_running_info.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).status == 'running'
       - (vm_running_info.vms | selectattr('vmid', 'equalto', vmid_full | int) | first).name == vm_full_config.name
 
-- name: Power off full VM without configuration changes
+- name: Power off full VM without configuration changes  # noqa: args[module]
   ansible.proxmox.proxmox_vm: &vm_power_off_args
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid_full }}"
     power_cycle: 'off'
   register: vm_power_off
 
+- name: Read power state after power off  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_power_off_state
+
 - name: Assert power off changed the VM
   ansible.builtin.assert:
     that:
       - vm_power_off is changed
       - vm_power_off.task_upid is defined
+      - vm_power_off_state.powerstate == 'stopped'
 
-- name: Power off full VM idempotently
+- name: Power off full VM idempotently  # noqa: args[module]
   ansible.proxmox.proxmox_vm: *vm_power_off_args
   register: vm_power_off_again
+
+- name: Read power state after repeated power off  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ vmid_full }}"
+  register: vm_power_off_again_state
 
 - name: Assert powered off VM is unchanged
   ansible.builtin.assert:
     that:
       - vm_power_off_again is not changed
+      - vm_power_off_again_state.powerstate == 'stopped'

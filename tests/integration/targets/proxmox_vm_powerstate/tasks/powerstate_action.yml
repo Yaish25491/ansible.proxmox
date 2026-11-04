@@ -1,0 +1,58 @@
+---
+- name: Read current VM power state
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ powerstate_vmid }}"
+  register: power_before
+
+- name: Assert power info is read-only
+  ansible.builtin.assert:
+    that:
+      - power_before is not changed
+      - power_before.powerstate in ['stopped', 'running', 'paused', 'suspended']
+
+- name: Perform the power transition
+  ansible.proxmox.proxmox_vm_powerstate:
+    vmid: "{{ powerstate_vmid }}"
+    powerstate: "{{ power_case.action }}"
+  register: power_transition
+  ignore_errors: "{{ power_case.ignore_failure | default(false) }}"
+
+- name: Assert power transition result
+  ansible.builtin.assert:
+    that:
+      - power_transition is failed or power_transition is changed
+      - power_transition is failed or power_transition.powerstate == power_case.expected
+
+- name: Independently verify the resulting power state
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ powerstate_vmid }}"
+  register: power_after
+
+- name: Assert the resulting power state
+  ansible.builtin.assert:
+    that:
+      - power_after is not changed
+      - power_after.powerstate == power_case.expected
+
+- name: Repeat the power action when requested
+  ansible.proxmox.proxmox_vm_powerstate:
+    vmid: "{{ powerstate_vmid }}"
+    powerstate: "{{ power_case.action }}"
+  register: power_repeat
+  when: power_case.repeat | default(false)
+
+- name: Read power state after the repeated action
+  ansible.proxmox.proxmox_vm_powerstate_info:
+    vmid: "{{ powerstate_vmid }}"
+  register: power_after_repeat
+  when: power_case.repeat | default(false)
+
+- name: Assert repeated action behavior
+  ansible.builtin.assert:
+    that:
+      - power_after_repeat is not changed
+      - power_after_repeat.powerstate == power_case.expected
+      - (power_repeat is changed) == (power_case.repeat_changed | default(false))
+      - power_repeat.powerstate == power_case.expected
+      - power_after_repeat.powerstate == power_case.expected
+  when: power_case.repeat | default(false)

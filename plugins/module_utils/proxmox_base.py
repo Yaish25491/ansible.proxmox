@@ -20,13 +20,16 @@ class ProxmoxBase(ABC):
     service = None
 
     def __init__(self, module, client=None):
-        """Attach the Ansible module and a shared, lazy API client.
+        """Validate task options and attach a shared, lazy API client.
 
         Args:
             module: Ansible module providing parameters and result handling.
             client: Optional existing ProxmoxClient; otherwise one is created.
         """
         self.module = module
+        task_timeout = module.params.get("task_timeout")
+        if task_timeout is not None and task_timeout < 0:
+            module.fail_json(msg="task_timeout must be zero or greater")
         self.client = client or ProxmoxClient(module, service=self.service)
 
     @property

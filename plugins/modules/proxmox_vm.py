@@ -148,14 +148,6 @@ options:
       tag:
         description: VLAN tag for this network device.
         type: int
-  task_timeout:
-    description:
-      - Maximum time in seconds to wait for each asynchronous VM create, update, delete, start, or stop task.
-      - When omitted, the task-waiting function uses its default timeout of 300 seconds.
-      - Set to C(0) to wait indefinitely. Negative values are not allowed.
-      - Increase this value for large disks or slow storage when a finite timeout is preferred.
-      - Reaching this timeout fails the module but does not cancel the task on the Proxmox server.
-    type: int
   power_cycle:
     description:
       - C(fail) configuration changes and deletion require a stopped VM, fail if vm is not powered off.
@@ -178,6 +170,7 @@ options:
     default: present
 extends_documentation_fragment:
   - ansible.proxmox.proxmox_base
+  - ansible.proxmox.proxmox_task
   - ansible.proxmox.proxmox_https_options
 notes:
   - For Proxmox VE, the authenticated identity must have all privileges of the C(Administrator) role,
@@ -314,7 +307,7 @@ class ProxmoxVmModule(ProxmoxResourceModule):
         return ProxmoxPower(self.module, client=self.client)
 
     def _vm(self):
-        return self.api.nodes(self.module.params["node"]).qemu(self.module.params["vmid"])
+        return self.power.vm_resource()
 
     def _validate_efidisk_parameters(self):
         if self.module.params.get("state", "present") != "present":
@@ -535,15 +528,17 @@ class ProxmoxVmModule(ProxmoxResourceModule):
         return parameters
 
     def _wait_for_task(self, result):
+        """Record and wait for an asynchronous result using shared task options.
+
+        Args:
+            result: API response containing a task UPID, or a synchronous result.
+        """
         self._task_upid = None
         if not isinstance(result, str) or not result.startswith("UPID:"):
             return
         self._task_upid = result
         task = ProxmoxTask(self.module, client=self.client)
-        if self.module.params["task_timeout"] is None:
-            task.wait_for_task(result)
-        else:
-            task.wait_for_task(result, timeout=self.module.params["task_timeout"])
+        task.wait_for_task(result)
 
     def prepare_result(self, changed, resource=None, **values):
         vm = dict(resource or {})
@@ -684,7 +679,6 @@ def main():
             {
                 "node": {"type": "str", "required": True},
                 "vmid": {"type": "int", "required": True},
-                "task_timeout": {"type": "int"},
                 "power_cycle": {
                     "type": "str", "choices": ["on", "off", "fail", "hotplug"],
                     "default": "fail",

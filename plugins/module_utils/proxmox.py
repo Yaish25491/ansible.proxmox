@@ -87,6 +87,20 @@ def proxmox_argument_spec(argument_spec=None):
     return spec
 
 
+def proxmox_task_argument_spec(argument_spec=None):
+    """Build connection arguments with shared asynchronous task options.
+
+    Args:
+        argument_spec: Optional module arguments, overriding shared definitions.
+
+    Returns:
+        A new argument specification including the optional task timeout.
+    """
+    task_spec = {"task_timeout": {"type": "int"}}
+    task_spec.update(argument_spec or {})
+    return proxmox_argument_spec(task_spec)
+
+
 def proxmox_resource_argument_spec(argument_spec=None):
     """Build connection arguments with a standard present/absent state option.
 
@@ -94,7 +108,8 @@ def proxmox_resource_argument_spec(argument_spec=None):
         argument_spec: Optional module arguments, overriding shared definitions.
 
     Returns:
-        A new argument specification with state defaulting to 'present'.
+        A new argument specification with shared task options and state
+        defaulting to 'present'.
     """
     resource_spec = {
         "state": {
@@ -104,7 +119,7 @@ def proxmox_resource_argument_spec(argument_spec=None):
         },
     }
     resource_spec.update(argument_spec or {})
-    return proxmox_argument_spec(resource_spec)
+    return proxmox_task_argument_spec(resource_spec)
 
 
 def proxmox_required_together(required_together=None):

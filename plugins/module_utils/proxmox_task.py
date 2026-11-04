@@ -32,14 +32,15 @@ class ProxmoxTask(ProxmoxBase):
             raise ValueError("Invalid Proxmox task UPID")
         return parts[1]
 
-    def wait_for_task(self, upid, node=None, timeout=300, poll_interval=1):
+    def wait_for_task(self, upid, node=None, timeout=None, poll_interval=1):
         """Poll a task until it stops, failing for task errors or a timeout.
 
         Args:
             upid: Proxmox task identifier to poll.
             node: Optional node override; otherwise extracted from upid.
-            timeout: Maximum wait in seconds; zero waits indefinitely and negative
-                values fail the module. Defaults to 300 seconds.
+            timeout: Explicit maximum wait in seconds. When None, use the module's
+                task_timeout parameter, falling back to 300 seconds when omitted.
+                Zero waits indefinitely; negative values fail the module.
             poll_interval: Positive number of seconds between status requests.
 
         Returns:
@@ -48,6 +49,11 @@ class ProxmoxTask(ProxmoxBase):
         Raises:
             ValueError: If poll_interval is nonpositive or node extraction fails.
         """
+        timeout = next(
+            candidate
+            for candidate in (timeout, self.module.params.get("task_timeout"), 300)
+            if candidate is not None
+        )
         if timeout < 0:
             self.module.fail_json(msg="timeout must be zero or greater")
         if poll_interval <= 0:
@@ -56,15 +62,15 @@ class ProxmoxTask(ProxmoxBase):
         node = node or self.task_node(upid)
         deadline = time.monotonic() + timeout if timeout else None
         endpoint = self.api.nodes(node).tasks(upid).status
+        status = self.call_api("Retrieving Proxmox task status", endpoint.get)
 
-        while True:
-            status = self.call_api("Retrieving Proxmox task status", endpoint.get)
-            if status.get("status") == "stopped":
-                exit_status = status.get("exitstatus")
-                if exit_status and exit_status != "OK":
-                    self.module.fail_json(msg="Proxmox task failed", task=upid, task_exit_status=exit_status)
-                return status
-
+        while status.get("status") != "stopped":
             if deadline is not None and time.monotonic() >= deadline:
                 self.module.fail_json(msg="Timed out waiting for Proxmox task", task=upid, timeout=timeout)
             time.sleep(poll_interval)
+            status = self.call_api("Retrieving Proxmox task status", endpoint.get)
+
+        exit_status = status.get("exitstatus")
+        if exit_status and exit_status != "OK":
+            self.module.fail_json(msg="Proxmox task failed", task=upid, task_exit_status=exit_status)
+        return status

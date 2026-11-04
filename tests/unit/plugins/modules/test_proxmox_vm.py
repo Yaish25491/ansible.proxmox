@@ -302,18 +302,21 @@ def test_vm_return_documentation_matches_output_keys():
     assert documentation["vm"]["sample"]["vmid"] == "100"
 
 
-@pytest.mark.parametrize(
-    "parameters, expected_options",
-    [({}, {}), ({"task_timeout": 0}, {"timeout": 0}), ({"task_timeout": 900}, {"timeout": 900})],
-)
-def test_vm_task_wait_uses_configured_timeout(monkeypatch, parameters, expected_options):
+@pytest.mark.parametrize("parameters", [{}, {"task_timeout": 0}, {"task_timeout": 900}])
+def test_vm_task_wait_uses_configured_timeout(monkeypatch, parameters):
+    """Verify VM task waiting delegates timeout resolution to the shared utility.
+
+    Args:
+        monkeypatch: Pytest fixture for replacing task waiting.
+        parameters: Module task-timeout parameters.
+    """
     wait_for_task = Mock()
     monkeypatch.setattr(ProxmoxTask, "wait_for_task", wait_for_task)
     vm = make_vm(module_params(**parameters))
 
     vm._wait_for_task("UPID:pve01:task")
 
-    wait_for_task.assert_called_once_with("UPID:pve01:task", **expected_options)
+    wait_for_task.assert_called_once_with("UPID:pve01:task")
 
 
 @pytest.mark.parametrize("efitype", ["2m", "4m"])
