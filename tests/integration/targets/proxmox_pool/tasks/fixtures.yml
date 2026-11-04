@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Download a uniquely named official Alpine template and verify its checksum
+  proxmox_pool_test_api:
+    method: post
+    path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_template_storage }}/download-url"
+    data:
+      url: "{{ pool_lxc_templates[-1].location }}"
+      content: vztmpl
+      filename: "{{ pool_test_template_filename }}"
+      checksum: "{{ pool_lxc_templates[-1].sha512sum }}"
+      checksum-algorithm: sha512
+
+- name: Create a minimal stopped container owned by this target
+  proxmox_pool_test_api:
+    method: post
+    path: "nodes/{{ proxmox_node }}/lxc"
+    data:
+      vmid: "{{ pool_test_ctid | int }}"
+      hostname: "{{ pool_test_name }}-ct"
+      ostemplate: "{{ pool_test_template_volid }}"
+      rootfs: "{{ pool_test_storage }}:1"
+      memory: 128
+      swap: 0
+      unprivileged: 1
+      start: 0
+
+- name: Verify the owned container is stopped before pool tests
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/lxc/{{ pool_test_ctid }}/status/current"
+  register: pool_fixture_ct
+
+- name: Assert the fixture is a stopped container
+  ansible.builtin.assert:
+    that:
+      - pool_fixture_ct.data.vmid | int == pool_test_ctid | int
+      - pool_fixture_ct.data.status == 'stopped'

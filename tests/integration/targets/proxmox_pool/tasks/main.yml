@@ -1,0 +1,94 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise the pool action and information modules together
+  module_defaults:
+    group/ansible.proxmox.proxmox: &pool_test_connection
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+    proxmox_pool_test_api: *pool_test_connection
+  block:
+    - name: Discover existing pools before claiming fixture names
+      ansible.proxmox.proxmox_pool_info:
+      register: pool_preflight
+
+    - name: Discover existing VM before claiming fixture VMID
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ pool_test_vmid }}"
+      register: pool_vm_preflight
+
+    - name: Discover guest IDs across the cluster before claiming fixtures
+      proxmox_pool_test_api:
+        path: cluster/resources
+        data:
+          type: vm
+      register: pool_guest_preflight
+
+    - name: Read the official container template catalog
+      proxmox_pool_test_api:
+        path: "nodes/{{ proxmox_node }}/aplinfo"
+      register: pool_template_catalog
+
+    - name: Select Alpine templates for the configured architecture
+      ansible.builtin.set_fact:
+        pool_lxc_templates: >-
+          {{ pool_template_catalog.data | selectattr('os', 'equalto', 'alpine')
+             | selectattr('architecture', 'equalto', pool_test_template_architecture)
+             | selectattr('type', 'equalto', 'lxc') | sort(attribute='version') | list }}
+
+    - name: Require an official container template with a checksum
+      ansible.builtin.assert:
+        that:
+          - pool_lxc_templates | length > 0
+          - pool_lxc_templates[-1].sha512sum | length == 128
+        fail_msg: An Alpine LXC template with a SHA512 checksum is required in the Proxmox appliance catalog.
+
+    - name: Discover existing templates before claiming the download filename
+      proxmox_pool_test_api:
+        path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_template_storage }}/content"
+        data:
+          content: vztmpl
+      register: pool_template_preflight
+
+    - name: Verify randomized fixture identifiers are unused
+      ansible.builtin.assert:
+        that:
+          - pool_preflight.pools | map(attribute='poolid') | intersect(pool_test_ids) | length == 0
+          - pool_vm_preflight.vms | length == 0
+          - pool_guest_preflight.data | map(attribute='vmid') | intersect([pool_test_vmid | int, pool_test_ctid | int]) | length == 0
+          - pool_test_template_volid not in (pool_template_preflight.data | map(attribute='volid') | list)
+
+    - name: Claim ownership only after verifying fixture absence
+      ansible.builtin.set_fact:
+        pool_cleanup_allowed: true
+
+    - name: Exercise reusable cleanup before testing
+      ansible.builtin.include_tasks: cleanup.yml
+
+    - name: Prepare owned guest and template fixtures
+      ansible.builtin.include_tasks: fixtures.yml
+
+    - name: Test pool creation comments idempotency and check mode
+      ansible.builtin.include_tasks: lifecycle.yml
+
+    - name: Test guest and storage membership through info reads
+      ansible.builtin.include_tasks: membership.yml
+
+    - name: Test creation with initial QEMU LXC and storage members
+      ansible.builtin.include_tasks: initial_members.yml
+
+    - name: Test nested pools and deletion through info reads
+      ansible.builtin.include_tasks: nested.yml
+
+  always:
+    - name: Clean and verify owned resources after success or failure
+      ansible.builtin.include_tasks: cleanup.yml
+      when: pool_cleanup_allowed | default(false)

@@ -1,0 +1,88 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove the empty secondary pool to exercise creation with members
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    state: absent
+
+- name: Predict creation with initial guest and storage memberships
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    comment: Pool created with members
+    vms: ["{{ pool_test_vmid }}", "{{ pool_test_ctid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  check_mode: true
+  register: pool_initial_check
+
+- name: Read pool after predicted creation with members
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_other }}"
+  register: pool_initial_check_info
+
+- name: Verify populated creation prediction did not mutate the server
+  ansible.builtin.assert:
+    that:
+      - pool_initial_check is changed
+      - pool_initial_check.pool.members | length == 3
+      - pool_initial_check_info.pools == []
+
+- name: Create pool with initial QEMU LXC and storage memberships
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    comment: Pool created with members
+    vms: ["{{ pool_test_vmid }}", "{{ pool_test_ctid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  register: pool_initial_create
+
+- name: Read each populated member type through the info module
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_other }}"
+    type: "{{ item }}"
+  loop: [qemu, lxc, storage]
+  register: pool_initial_types
+
+- name: Repeat populated pool creation
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    comment: Pool created with members
+    vms: ["{{ pool_test_vmid }}", "{{ pool_test_ctid }}"]
+    storage: ["{{ pool_test_storage }}"]
+  register: pool_initial_repeat
+
+- name: Verify actual populated creation filtered values and idempotency
+  ansible.builtin.assert:
+    that:
+      - pool_initial_create is changed
+      - pool_initial_create.pool.members | length == 3
+      - pool_initial_types.results[0].pools[0].members | map(attribute='vmid') | list == [pool_test_vmid | int]
+      - pool_initial_types.results[1].pools[0].members | map(attribute='vmid') | list == [pool_test_ctid | int]
+      - pool_initial_types.results[2].pools[0].members | map(attribute='storage') | list == [pool_test_storage]
+      - pool_initial_types.results[1].pools[0].comment == 'Pool created with members'
+      - pool_initial_repeat is not changed
+
+- name: Remove initial memberships without deleting their resources
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ pool_test_other }}"
+    vms: []
+    storage: []
+  register: pool_initial_clear
+
+- name: Read pool after removing initial memberships
+  ansible.proxmox.proxmox_pool_info:
+    poolid: "{{ pool_test_other }}"
+  register: pool_initial_cleared
+
+- name: Verify the underlying container was preserved and remains stopped
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/lxc/{{ pool_test_ctid }}/status/current"
+  register: pool_initial_ct
+
+- name: Verify LXC membership removal preserved the underlying container
+  ansible.builtin.assert:
+    that:
+      - pool_initial_clear is changed
+      - pool_initial_cleared.pools[0].members == []
+      - pool_initial_ct.data.vmid | int == pool_test_ctid | int
+      - pool_initial_ct.data.status == 'stopped'

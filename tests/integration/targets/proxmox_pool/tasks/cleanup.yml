@@ -1,0 +1,118 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+# Connection arguments are inherited from the parent block's module_defaults.
+- name: Discover existing owned pools for membership cleanup  # noqa: args[module]
+  ansible.proxmox.proxmox_pool_info:
+  register: pool_cleanup_inventory
+  ignore_errors: true
+
+- name: Detach members only from owned pools that still exist  # noqa: args[module]
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ item }}"
+    vms: []
+    storage: []
+  loop: "{{ pool_test_ids | intersect(pool_cleanup_inventory.pools | default([]) | map(attribute='poolid') | list) }}"
+  register: pool_cleanup_detach
+  ignore_errors: true
+
+- name: Delete all owned pools in child-before-parent order  # noqa: args[module]
+  ansible.proxmox.proxmox_pool:
+    poolid: "{{ item }}"
+    state: absent
+  loop: "{{ pool_test_ids }}"
+  register: pool_cleanup_delete
+  ignore_errors: true
+
+- name: Remove only the owned fixture guest  # noqa: args[module]
+  ansible.proxmox.proxmox_vm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ pool_test_vmid }}"
+    state: absent
+  register: pool_cleanup_vm_delete
+  ignore_errors: true
+
+- name: Discover containers before deleting the owned fixture  # noqa: args[module]
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/lxc"
+  register: pool_cleanup_containers
+  ignore_errors: true
+
+- name: Remove only the owned container and its root disk  # noqa: args[module]
+  proxmox_pool_test_api:
+    method: delete
+    path: "nodes/{{ proxmox_node }}/lxc/{{ pool_test_ctid }}"
+  when: >-
+    pool_cleanup_containers is failed or
+    pool_test_ctid | int in (pool_cleanup_containers.data | default([]) | map(attribute='vmid') | list)
+  register: pool_cleanup_ct_delete
+  ignore_errors: true
+
+- name: Discover templates before deleting the owned download  # noqa: args[module]
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_template_storage }}/content"
+    data:
+      content: vztmpl
+  register: pool_cleanup_templates
+  ignore_errors: true
+
+- name: Remove only the uniquely named fixture template  # noqa: args[module]
+  proxmox_pool_test_api:
+    method: delete
+    path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_template_storage }}/content/{{ pool_test_template_volid }}"
+  when: >-
+    pool_cleanup_templates is failed or
+    pool_test_template_volid in (pool_cleanup_templates.data | default([]) | map(attribute='volid') | list)
+  register: pool_cleanup_template_delete
+  ignore_errors: true
+
+- name: Read remaining pool inventory after cleanup  # noqa: args[module]
+  ansible.proxmox.proxmox_pool_info:
+  register: pool_cleanup_remaining
+  ignore_errors: true
+
+- name: Read fixture guest after cleanup  # noqa: args[module]
+  ansible.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ pool_test_vmid }}"
+  register: pool_cleanup_vm
+  ignore_errors: true
+
+- name: Read allocated guest IDs after cleanup  # noqa: args[module]
+  proxmox_pool_test_api:
+    path: cluster/resources
+    data:
+      type: vm
+  register: pool_cleanup_guests_remaining
+  ignore_errors: true
+
+- name: Read templates after cleanup  # noqa: args[module]
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_template_storage }}/content"
+    data:
+      content: vztmpl
+  register: pool_cleanup_templates_remaining
+  ignore_errors: true
+
+- name: Read container disk volumes after cleanup  # noqa: args[module]
+  proxmox_pool_test_api:
+    path: "nodes/{{ proxmox_node }}/storage/{{ pool_test_storage }}/content"
+    data:
+      vmid: "{{ pool_test_ctid | int }}"
+  register: pool_cleanup_volumes_remaining
+  ignore_errors: true
+
+- name: Verify owned resources are absent and surface cleanup failures
+  ansible.builtin.assert:
+    that:
+      - pool_cleanup_remaining is not failed
+      - pool_cleanup_vm is not failed
+      - pool_cleanup_guests_remaining is not failed
+      - pool_cleanup_templates_remaining is not failed
+      - pool_cleanup_volumes_remaining is not failed
+      - pool_cleanup_remaining.pools | map(attribute='poolid') | intersect(pool_test_ids) | length == 0
+      - pool_cleanup_vm.vms | length == 0
+      - pool_cleanup_guests_remaining.data | map(attribute='vmid') | intersect([pool_test_vmid | int, pool_test_ctid | int]) | length == 0
+      - pool_test_template_volid not in (pool_cleanup_templates_remaining.data | map(attribute='volid') | list)
+      - pool_cleanup_volumes_remaining.data | length == 0

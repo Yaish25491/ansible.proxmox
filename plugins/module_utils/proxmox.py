@@ -160,28 +160,38 @@ class ProxmoxClient:
         self.service = service
         self._api = None
         self._roles = None
+        self._changed = False
 
-    def fail_request(self, operation, exception, parameters=None):
-        """Exit with API error details and a parameter-specific message when possible.
+    def mark_changed(self):
+        """Remember a completed mutation for subsequent failure results."""
+        self._changed = True
+
+    def fail_request(self, operation, exception=None, parameters=None):
+        """Report a request or validation failure, preserving completed mutations.
 
         Args:
-            operation: Human-readable description of the failed API operation.
-            exception: Original API exception, retained as text in 'api_error'.
+            operation: API operation description, or the full message without an exception.
+            exception: Optional API exception, retained as text in 'api_error'.
             parameters: Submitted parameters used to identify HTTP 400 field errors.
         """
-        details = {"error_type": type(exception).__name__}
-        status = self.exception_status(exception)
-        if status is not None:
-            details["status_code"] = status
-        api_error = str(exception)
-        details["api_error"] = api_error
-        message = "{0} failed: {1}".format(operation, api_error)
-        errors = getattr(exception, "errors", None)
-        if status == 400 and isinstance(errors, dict):
-            for parameter, value in (parameters or {}).items():
-                if parameter in errors:
-                    message = "{0} value for {1} is not available".format(value, parameter)
-                    break
+        message = operation
+        details = {}
+        if exception is not None:
+            details["error_type"] = type(exception).__name__
+            status = self.exception_status(exception)
+            if status is not None:
+                details["status_code"] = status
+            api_error = str(exception)
+            details["api_error"] = api_error
+            message = "{0} failed: {1}".format(operation, api_error)
+            errors = getattr(exception, "errors", None)
+            if status == 400 and isinstance(errors, dict):
+                for parameter, value in (parameters or {}).items():
+                    if parameter in errors:
+                        message = "{0} value for {1} is not available".format(value, parameter)
+                        break
+        if self._changed:
+            details["changed"] = True
         self.module.fail_json(msg=message, **details)
 
     @staticmethod
@@ -255,8 +265,8 @@ class ProxmoxClient:
             None,
         ) if isinstance(roles, list) else None
         if role_info is None:
-            self.module.fail_json(
-                msg="Unable to verify PVE role {0}; refusing to continue.".format(role)
+            self.fail_request(
+                "Unable to verify PVE role {0}; refusing to continue.".format(role)
             )
 
         role_privileges = role_info.get("privs", "")
@@ -273,8 +283,8 @@ class ProxmoxClient:
         if permissions == {}:
             effective = {}
         if not isinstance(effective, dict):
-            self.module.fail_json(
-                msg="Unexpected PVE permissions response for role {0} on {1}.".format(role, path)
+            self.fail_request(
+                "Unexpected PVE permissions response for role {0} on {1}.".format(role, path)
             )
 
         missing = sorted(
@@ -283,8 +293,8 @@ class ProxmoxClient:
             if privilege not in effective or (require_propagation and not bool(effective[privilege]))
         )
         if missing:
-            self.module.fail_json(
-                msg="Authenticated identity lacks full {0} permissions propagated on {1}; missing: {2}.".format(
+            self.fail_request(
+                "Authenticated identity lacks full {0} permissions propagated on {1}; missing: {2}.".format(
                     role, path, ", ".join(missing)
                 )
             )
