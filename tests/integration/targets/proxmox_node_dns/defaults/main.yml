@@ -1,0 +1,13 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+proxmox_node: pve01
+# Full scenarios replace and clear node resolver settings. Enable only for a
+# disposable node with recovery access independent of the API being tested.
+dns_test_allow_reconfiguration: false
+dns_test_search: "ansible-dns-{{ integration_resource_ids[0] }}-{{ integration_resource_ids[1] }}.invalid"
+dns_test_servers:
+  - 192.0.2.53
+  - 198.51.100.53
+  - '2001:db8::53'

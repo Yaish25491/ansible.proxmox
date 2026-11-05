@@ -1,0 +1,44 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Apply the search-domain change
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_test_search }}"
+  register: dns_update
+
+- name: Independently read the updated DNS configuration
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_update
+
+- name: Verify the action return and actual search domain with preserved servers
+  ansible.builtin.assert:
+    that:
+      - dns_update is changed
+      - dns_update.dns == dns_after_update.nodes[0].dns
+      - dns_after_update.nodes[0].dns == dict(dns_original, search=dns_test_search)
+
+- name: Repeat the change and omit all configuration values
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ item | default(omit, true) }}"
+  loop:
+    - "{{ dns_test_search }}"
+    - null
+  register: dns_noops
+
+- name: Predict the already satisfied configuration
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_test_search }}"
+  check_mode: true
+  register: dns_noop_prediction
+
+- name: Verify repeated omitted and check-mode requests are unchanged
+  ansible.builtin.assert:
+    that:
+      - dns_noops is not changed
+      - dns_noop_prediction is not changed

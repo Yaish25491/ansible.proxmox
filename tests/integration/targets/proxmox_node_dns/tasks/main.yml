@@ -1,0 +1,92 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset restoration ownership for this invocation
+  ansible.builtin.set_fact:
+    dns_restore_allowed: false
+
+- name: Exercise node DNS configuration and information together
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Read all node subsets before changing DNS
+      ansible.proxmox.proxmox_node_info:
+        node: "{{ proxmox_node }}"
+      register: dns_initial
+
+    - name: Require complete initial node information before claiming restoration
+      ansible.builtin.assert:
+        that:
+          - dns_initial is not changed
+          - dns_initial.nodes | length == 1
+          - dns_initial.nodes[0].node == proxmox_node
+          - dns_initial.nodes[0].status.uptime is defined
+          - dns_initial.nodes[0].hosts.data is string
+          - dns_initial.nodes[0].hosts.digest | length > 0
+          - dns_initial.nodes[0].time.timezone | length > 0
+          - dns_initial.nodes[0].time.time | int > 0
+          - dns_initial.nodes[0].time.localtime | int > 0
+          - dns_initial.nodes[0].dns is mapping
+          - dns_initial.nodes[0].dns.get('search', '') != dns_test_search
+
+    - name: Capture original resolver settings before any mutation
+      ansible.builtin.set_fact:
+        dns_original: "{{ dns_initial.nodes[0].dns }}"
+        dns_original_servers: >-
+          {{ [dns_initial.nodes[0].dns.get('dns1', ''), dns_initial.nodes[0].dns.get('dns2', ''),
+              dns_initial.nodes[0].dns.get('dns3', '')] | reject('equalto', '') | list }}
+
+    - name: Validate that the captured configuration can be restored
+      ansible.proxmox.proxmox_node_dns:
+        node: "{{ proxmox_node }}"
+        search: "{{ dns_original.get('search', '') }}"
+        dns_servers: "{{ dns_original_servers }}"
+      check_mode: true
+      register: dns_restoration_preflight
+
+    - name: Require an exactly restorable API configuration
+      ansible.builtin.assert:
+        that:
+          - dns_restoration_preflight is not changed
+          - dns_restoration_preflight.dns == dns_original
+
+    - name: Verify DNS predictions without changing resolver settings
+      ansible.builtin.include_tasks: check_mode.yml
+
+    - name: Exercise node listing and individual information subsets
+      ansible.builtin.include_tasks: information.yml
+
+    - name: Require an explicitly designated disposable node before DNS writes
+      ansible.builtin.assert:
+        that:
+          - dns_test_allow_reconfiguration | bool
+        fail_msg: >-
+          Read-only checks completed; live DNS mutation tests have not run.
+          Full scenarios temporarily replace and clear resolvers and the search domain.
+          API-based cleanup cannot guarantee recovery after loss of API access.
+          Use a disposable node with independent recovery access and explicitly set
+          dns_test_allow_reconfiguration=true to run the full target.
+
+    - name: Permit restoration only after validating the captured settings
+      ansible.builtin.set_fact:
+        dns_restore_allowed: true
+
+    - name: Test DNS updates no-ops and check mode through independent reads
+      ansible.builtin.include_tasks: lifecycle.yml
+
+    - name: Test ordered servers explicit clears and information subsets
+      ansible.builtin.include_tasks: servers.yml
+
+  always:
+    - name: Restore and independently verify original DNS settings
+      ansible.builtin.include_tasks: cleanup.yml
+      when: dns_restore_allowed | default(false)

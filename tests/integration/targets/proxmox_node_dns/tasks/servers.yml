@@ -1,0 +1,143 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Configure all three ordered server slots while preserving the search domain
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    dns_servers: "{{ dns_test_servers }}"
+  register: dns_servers_update
+
+- name: Read all subsets after the DNS update
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [all]
+  register: dns_all_subsets
+
+- name: Verify all slots and preservation of hosts and timezone
+  ansible.builtin.assert:
+    that:
+      - dns_all_subsets.nodes[0].dns.search == dns_test_search
+      - dns_all_subsets.nodes[0].dns.dns1 == dns_test_servers[0]
+      - dns_all_subsets.nodes[0].dns.dns2 == dns_test_servers[1]
+      - dns_all_subsets.nodes[0].dns.dns3 == dns_test_servers[2]
+      - dns_servers_update.dns == dns_all_subsets.nodes[0].dns
+      - dns_all_subsets.nodes[0].hosts == dns_initial.nodes[0].hosts
+      - dns_all_subsets.nodes[0].time.timezone == dns_initial.nodes[0].time.timezone
+
+- name: Repeat the ordered server configuration
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    dns_servers: "{{ dns_test_servers }}"
+  register: dns_servers_noop
+
+- name: Predict clearing DNS settings
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: ''
+    dns_servers: []
+  check_mode: true
+  register: dns_clear_prediction
+
+- name: Read DNS after the clearing prediction
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_clear_prediction
+
+- name: Verify predicted empty configuration without mutation
+  ansible.builtin.assert:
+    that:
+      - dns_servers_noop is not changed
+      - dns_clear_prediction is changed
+      - dns_clear_prediction.dns == {}
+      - dns_after_clear_prediction.nodes[0].dns == dns_all_subsets.nodes[0].dns
+
+- name: Reverse the first two servers and remove the third slot
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    dns_servers: "{{ dns_test_servers[:2] | reverse | list }}"
+  register: dns_reordered
+
+- name: Read DNS after changing server order and reducing the list
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_reorder
+
+- name: Verify server ordering third-slot removal and search preservation
+  ansible.builtin.assert:
+    that:
+      - dns_reordered is changed
+      - dns_after_reorder.nodes[0].dns == dict(search=dns_test_search, dns1=dns_test_servers[1], dns2=dns_test_servers[0])
+      - dns_reordered.dns == dns_after_reorder.nodes[0].dns
+
+- name: Repeat the reduced ordered server list
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    dns_servers: "{{ dns_test_servers[:2] | reverse | list }}"
+  register: dns_reordered_noop
+
+- name: Verify the reduced ordered configuration is idempotent
+  ansible.builtin.assert:
+    that:
+      - dns_reordered_noop is not changed
+
+- name: Clear and repeat clearing the search domain while preserving servers
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: ''
+  loop: [first, repeat]
+  register: dns_clear_search
+
+- name: Read the configuration without a search domain
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_without_search
+
+- name: Verify search removal and server preservation
+  ansible.builtin.assert:
+    that:
+      - dns_clear_search.results[0] is changed
+      - dns_clear_search.results[1] is not changed
+      - dns_without_search.nodes[0].dns == dict(dns1=dns_test_servers[1], dns2=dns_test_servers[0])
+
+- name: Clear and repeat clearing all servers
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    dns_servers: []
+  loop: [first, repeat]
+  register: dns_clear_servers
+
+- name: Read the empty configuration
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_empty
+
+- name: Verify server removal and repeat idempotence
+  ansible.builtin.assert:
+    that:
+      - dns_clear_servers.results[0] is changed
+      - dns_clear_servers.results[1] is not changed
+      - dns_empty.nodes[0].dns == {}
+
+- name: Reconfigure an empty DNS configuration
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_test_search }}"
+    dns_servers: "{{ dns_test_servers[:1] }}"
+  register: dns_reconfigured
+
+- name: Read the reconfigured settings
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_reconfigure
+
+- name: Verify a single server and search domain can be restored after clearing
+  ansible.builtin.assert:
+    that:
+      - dns_reconfigured is changed
+      - dns_after_reconfigure.nodes[0].dns == dict(search=dns_test_search, dns1=dns_test_servers[0])

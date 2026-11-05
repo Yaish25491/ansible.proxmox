@@ -2,7 +2,7 @@
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Stateful pool fixtures shared by the action, info and discovery unit tests."""
+"""Stateful API fixtures shared by paired module unit tests."""
 
 from __future__ import absolute_import, division, print_function
 
@@ -98,6 +98,49 @@ def pool_environment():
         client = ProxmoxClient(module)
         api = PoolApi()
         api.records = copy.deepcopy(records or {})
+        client._api = api
+        client.validate_pve_permissions = Mock()
+        return module, client, api
+    return create
+
+
+@pytest.fixture
+def node_environment():
+    """Model DNS replacement semantics with the real shared error and mutation handling."""
+    def create(check_mode=False, dns=None, **parameters):
+        params = dict(node="pve01", state="present", search=None, dns_servers=None, gather_subset=None)
+        params.update(parameters)
+        module = SimpleNamespace(params=params, check_mode=check_mode, Exit=PoolExit, Fail=PoolFail)
+
+        def exit_json(**result):
+            raise PoolExit(result)
+
+        def fail_json(**result):
+            raise PoolFail(result)
+
+        module.exit_json = exit_json
+        module.fail_json = fail_json
+        client = ProxmoxClient(module)
+        records = {
+            "dns": copy.deepcopy(dns if dns is not None else {"search": "example.com", "dns1": "192.0.2.53", "dns2": "2001:db8::53"}),
+            "status": {"uptime": 123, "cpuinfo": {"cpus": 4}},
+            "hosts": {"data": "127.0.0.1 localhost\n192.0.2.1 pve01.example.com pve01\n", "digest": "abc123"},
+            "time": {"timezone": "UTC", "time": 1770000000, "localtime": 1770000000},
+        }
+        dns_endpoint = SimpleNamespace(get=Mock(side_effect=lambda: copy.deepcopy(records["dns"])))
+
+        def put(**values):
+            # PVE writes supplied values only, drops empty search, compacts and deduplicates servers.
+            result = {"search": values["search"]} if values.get("search") and values["search"] != "0" else {}
+            servers = list(dict.fromkeys(values[key] for key in ("dns1", "dns2", "dns3") if values.get(key) not in (None, "", "0.0.0.0")))
+            result.update({"dns{0}".format(index): server for index, server in enumerate(servers, 1)})
+            records["dns"] = result
+
+        dns_endpoint.put = Mock(side_effect=put)
+        nodes = Mock(return_value=SimpleNamespace(dns=dns_endpoint))
+        nodes.get.return_value = [{"node": "pve01", "status": "online"}, {"node": "pve02", "status": "offline"}]
+        api = SimpleNamespace(nodes=nodes, records=records, dns=dns_endpoint)
+        api.get = Mock(side_effect=lambda path: copy.deepcopy(records[path.rsplit("/", 1)[-1]]))
         client._api = api
         client.validate_pve_permissions = Mock()
         return module, client, api
