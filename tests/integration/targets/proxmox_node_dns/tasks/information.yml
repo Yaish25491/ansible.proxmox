@@ -1,0 +1,68 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: List node summaries without configuration reads
+  ansible.proxmox.proxmox_node_info:
+  register: dns_node_listing
+
+- name: Verify the configured node appears in the listing
+  ansible.builtin.assert:
+    that:
+      - dns_node_listing is not changed
+      - proxmox_node in (dns_node_listing.nodes | map(attribute='node') | list)
+
+- name: Read each node information subset in check mode
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: ["{{ item }}"]
+  loop: [status, dns, hosts, time]
+  check_mode: true
+  register: dns_individual_subsets
+
+- name: Verify each request returns only its selected subset and summary
+  ansible.builtin.assert:
+    that:
+      - item is not changed
+      - item.nodes | length == 1
+      - item.nodes[0].node == proxmox_node
+      - item.nodes[0].keys() | list | sort == ['node', 'summary', item.item] | sort
+      - item.nodes[0][item.item] is mapping
+  loop: "{{ dns_individual_subsets.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Retrieve the selected node summary without configuration subsets
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: []
+  register: dns_summary_only
+
+- name: Verify the empty subset selection returns only the summary
+  ansible.builtin.assert:
+    that:
+      - dns_summary_only is not changed
+      - dns_summary_only.nodes | length == 1
+      - dns_summary_only.nodes[0].keys() | list | sort == ['node', 'summary']
+      - dns_summary_only.nodes[0].summary.node == proxmox_node
+
+- name: Select an unused name for a missing-node read
+  ansible.builtin.set_fact:
+    dns_missing_node: "missing-{{ integration_resource_ids[0] }}-{{ integration_resource_ids[1] }}"
+
+- name: Require the missing-node name to be unused
+  ansible.builtin.assert:
+    that:
+      - dns_missing_node not in (dns_node_listing.nodes | map(attribute='node') | list)
+
+- name: Retrieve DNS information for the missing node
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ dns_missing_node }}"
+    gather_subset: [dns]
+  register: dns_missing_info
+
+- name: Verify missing nodes return an empty unchanged result
+  ansible.builtin.assert:
+    that:
+      - dns_missing_info is not changed
+      - dns_missing_info.nodes == []
