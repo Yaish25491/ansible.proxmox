@@ -1,0 +1,105 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Add the owned mapping while preserving all original entries
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv4 }}"
+    digest: "{{ hosts_original.digest }}"
+  register: hosts_added
+
+- name: Independently retrieve the file after the write
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_added_info
+
+- name: Require the predicted contents and token to match the actual file
+  ansible.builtin.assert:
+    that:
+      - hosts_added is changed
+      - hosts_added.hosts == hosts_prediction.hosts
+      - hosts_added_info is not changed
+      - hosts_added_info.nodes[0].hosts == hosts_added.hosts
+
+- name: Repeat the guarded configuration without writing
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv4 }}"
+    digest: "{{ hosts_added_info.nodes[0].hosts.digest }}"
+  register: hosts_repeated
+
+- name: Reject a stale snapshot after the first write
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv6 }}"
+    digest: "{{ hosts_original.digest }}"
+  register: hosts_stale_write
+  ignore_errors: true
+
+- name: Independently verify no-op and rejected update preserved the file
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_after_conflict
+
+- name: Require idempotence and a rejected stale update
+  ansible.builtin.assert:
+    that:
+      - hosts_repeated is not changed
+      - hosts_stale_write is failed
+      - hosts_stale_write is not changed
+      - "'digest does not match' in hosts_stale_write.msg"
+      - hosts_after_conflict.nodes[0].hosts == hosts_added.hosts
+
+- name: Predict replacing only the owned mapping with IPv6
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv6 }}"
+  check_mode: true
+  register: hosts_ipv6_prediction
+
+- name: Independently verify the replacement prediction did not write
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_after_ipv6_prediction
+
+- name: Require the IPv6 prediction and unchanged live file
+  ansible.builtin.assert:
+    that:
+      - hosts_ipv6_prediction is changed
+      - hosts_ipv6_prediction.hosts.data == hosts_variant_ipv6
+      - hosts_after_ipv6_prediction.nodes[0].hosts == hosts_added.hosts
+
+- name: Replace the owned mapping using the automatic digest guard
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv6 }}"
+  register: hosts_ipv6
+
+- name: Independently verify the IPv6 update
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_ipv6_info
+
+- name: Require exact prediction and readback agreement
+  ansible.builtin.assert:
+    that:
+      - hosts_ipv6 is changed
+      - hosts_ipv6.hosts == hosts_ipv6_prediction.hosts
+      - hosts_ipv6_info.nodes[0].hosts == hosts_ipv6.hosts
+
+- name: Repeat the unguarded request with automatic concurrency protection
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv6 }}"
+  register: hosts_ipv6_repeated
+
+- name: Require idempotence without an explicit digest
+  ansible.builtin.assert:
+    that:
+      - hosts_ipv6_repeated is not changed
+      - hosts_ipv6_repeated.hosts == hosts_ipv6.hosts

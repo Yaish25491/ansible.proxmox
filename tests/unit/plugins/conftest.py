@@ -9,6 +9,7 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 import copy
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -124,9 +125,10 @@ def node_environment():
         records = {
             "dns": copy.deepcopy(dns if dns is not None else {"search": "example.com", "dns1": "192.0.2.53", "dns2": "2001:db8::53"}),
             "status": {"uptime": 123, "cpuinfo": {"cpus": 4}},
-            "hosts": {"data": "127.0.0.1 localhost\n192.0.2.1 pve01.example.com pve01\n", "digest": "abc123"},
+            "hosts": {"data": "127.0.0.1 localhost\n192.0.2.1 pve01.example.com pve01\n"},
             "time": {"timezone": "UTC", "time": 1770000000, "localtime": 1770000000},
         }
+        records["hosts"]["digest"] = hashlib.sha1(records["hosts"]["data"].encode("utf-8"), usedforsecurity=False).hexdigest()
         dns_endpoint = SimpleNamespace(get=Mock(side_effect=lambda: copy.deepcopy(records["dns"])))
 
         def put(**values):
@@ -147,9 +149,17 @@ def node_environment():
             records["time"].update(timezone=timezone, localtime=records["time"]["time"] + offsets[timezone])
 
         time_endpoint.put = Mock(side_effect=set_timezone)
-        nodes = Mock(return_value=SimpleNamespace(dns=dns_endpoint, time=time_endpoint))
+        hosts_endpoint = SimpleNamespace(get=Mock(side_effect=lambda: copy.deepcopy(records["hosts"])))
+
+        def post_hosts(data, digest):
+            if digest != records["hosts"]["digest"]:
+                raise RuntimeError("checksum mismatch (file changed by other user?)")
+            records["hosts"] = {"data": data, "digest": hashlib.sha1(data.encode("utf-8"), usedforsecurity=False).hexdigest()}
+
+        hosts_endpoint.post = Mock(side_effect=post_hosts)
+        nodes = Mock(return_value=SimpleNamespace(dns=dns_endpoint, hosts=hosts_endpoint, time=time_endpoint))
         nodes.get.return_value = [{"node": "pve01", "status": "online"}, {"node": "pve02", "status": "offline"}]
-        api = SimpleNamespace(nodes=nodes, records=records, dns=dns_endpoint, time=time_endpoint)
+        api = SimpleNamespace(nodes=nodes, records=records, dns=dns_endpoint, hosts=hosts_endpoint, time=time_endpoint)
         api.get = Mock(side_effect=lambda path: copy.deepcopy(records[path.rsplit("/", 1)[-1]]))
         client._api = api
         client.validate_pve_permissions = Mock()

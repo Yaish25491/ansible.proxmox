@@ -1,0 +1,65 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset cleanup scenario verification for this invocation
+  ansible.builtin.set_fact:
+    hosts_cleanup_refusal_verified: false
+    hosts_cleanup_failure_verified: false
+
+- name: Verify cleanup refuses file contents outside its recognized variants
+  block:
+    - name: Exclude the current owned fixture from the cleanup allowlist
+      ansible.builtin.include_tasks: cleanup.yml
+      vars:
+        hosts_variant_ipv4: "{{ hosts_original.data }}"
+        hosts_variant_ipv6: "{{ hosts_original.data }}"
+
+  rescue:
+    - name: Require refusal without a restore and with an independent read
+      ansible.builtin.assert:
+        that:
+          - "'Exact hosts restoration could not be verified.' in ansible_failed_result.msg"
+          - hosts_cleanup_current is succeeded
+          - hosts_cleanup_current.nodes[0].hosts == hosts_ipv6.hosts
+          - hosts_restoration is skipped
+          - hosts_restoration_info is succeeded
+          - hosts_restoration_info is not changed
+          - hosts_restoration_info.nodes[0].hosts == hosts_ipv6.hosts
+
+    - name: Record verified cleanup refusal
+      ansible.builtin.set_fact:
+        hosts_cleanup_refusal_verified: true
+
+- name: Verify cleanup continues after a restore-module failure
+  # Invalid timeout fails the restore module before it can write. Information
+  # requests retain their normal options and must still verify the live file.
+  module_defaults:
+    ansible.proxmox.proxmox_node_hosts:
+      api_timeout: 0
+  block:
+    - name: Run cleanup with an invalid request timeout for restoration only
+      ansible.builtin.include_tasks: cleanup.yml
+
+  rescue:
+    - name: Require a visible restore failure followed by an independent read
+      ansible.builtin.assert:
+        that:
+          - "'Exact hosts restoration could not be verified.' in ansible_failed_result.msg"
+          - hosts_cleanup_current is succeeded
+          - hosts_restoration is failed
+          - hosts_restoration is not changed
+          - "'api_timeout must be greater than zero' in hosts_restoration.msg"
+          - hosts_restoration_info is succeeded
+          - hosts_restoration_info is not changed
+          - hosts_restoration_info.nodes[0].hosts == hosts_ipv6.hosts
+
+    - name: Record verified restoration failure handling
+      ansible.builtin.set_fact:
+        hosts_cleanup_failure_verified: true
+
+- name: Require both cleanup failure paths to have been exercised
+  ansible.builtin.assert:
+    that:
+      - hosts_cleanup_refusal_verified | bool
+      - hosts_cleanup_failure_verified | bool

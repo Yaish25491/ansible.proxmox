@@ -1,0 +1,99 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict adding a fixture without writing hosts
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_variant_ipv4 }}"
+    digest: "{{ hosts_original.digest }}"
+  check_mode: true
+  register: hosts_prediction
+
+- name: Require exact target data and a new digest
+  ansible.builtin.assert:
+    that:
+      - hosts_prediction is changed
+      - hosts_prediction.hosts.data == hosts_variant_ipv4
+      - hosts_prediction.hosts.digest == hosts_variant_ipv4 | hash('sha1')
+      - hosts_prediction.hosts.digest != hosts_original.digest
+
+- name: Predict clearing the file without removing any live mappings
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: ''
+  check_mode: true
+  register: hosts_empty_prediction
+
+- name: Require an exact empty-file prediction
+  ansible.builtin.assert:
+    that:
+      - hosts_empty_prediction.changed == (hosts_original.data != '')
+      - hosts_empty_prediction.hosts.data == ''
+      - hosts_empty_prediction.hosts.digest == '' | hash('sha1')
+
+- name: Reject an incorrect digest even for unchanged contents
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_original.data }}"
+    digest: "{{ '0' * 40 if hosts_original.digest != '0' * 40 else '1' * 40 }}"
+  check_mode: true
+  register: hosts_stale_prediction
+  ignore_errors: true
+
+- name: Reject invalid hosts input in check mode
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "not-an-ip {{ hosts_test_name }}\n"
+  check_mode: true
+  register: hosts_invalid_prediction
+  ignore_errors: true
+
+- name: Require useful failures without reported writes
+  ansible.builtin.assert:
+    that:
+      - hosts_stale_prediction is failed
+      - hosts_stale_prediction is not changed
+      - "'digest does not match' in hosts_stale_prediction.msg"
+      - hosts_invalid_prediction is failed
+      - hosts_invalid_prediction is not changed
+      - "'IPv4 or IPv6' in hosts_invalid_prediction.msg"
+
+- name: Confirm the missing-node fixture does not name an existing node
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ hosts_test_missing_node }}"
+    gather_subset: [hosts]
+  register: hosts_missing_info
+
+- name: Require an empty information result for the missing node
+  ansible.builtin.assert:
+    that:
+      - hosts_missing_info is not changed
+      - hosts_missing_info.nodes == []
+
+- name: Reject a hosts update prediction for the verified missing node
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ hosts_test_missing_node }}"
+    data: "{{ hosts_original.data }}"
+  check_mode: true
+  register: hosts_missing_prediction
+  ignore_errors: true
+
+- name: Require a useful missing-node failure without a predicted write
+  ansible.builtin.assert:
+    that:
+      - hosts_missing_prediction is failed
+      - hosts_missing_prediction is not changed
+      - "('Node ' ~ hosts_test_missing_node ~ ' does not exist.') in hosts_missing_prediction.msg"
+
+- name: Independently verify every read-only scenario preserved the file
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_after_predictions
+
+- name: Require unchanged data and digest after predictions and failures
+  ansible.builtin.assert:
+    that:
+      - hosts_after_predictions is not changed
+      - hosts_after_predictions.nodes[0].hosts == hosts_original
