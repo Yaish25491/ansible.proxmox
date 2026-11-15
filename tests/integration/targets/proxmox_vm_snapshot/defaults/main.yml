@@ -1,0 +1,7 @@
+---
+proxmox_node: pve01
+vm_storage: local-lvm
+vmid_snapshot: "{{ integration_resource_ids[0] }}"
+vmid_missing_snapshot: "{{ integration_resource_ids[1] }}"
+snapshot_name: "snapshot_ansible-{{ vmid_snapshot }}"
+snapshot_second_name: "{{ snapshot_name }}-second"

@@ -1,0 +1,488 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise the VM snapshot lifecycle
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Remove any stale snapshot test VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        power_cycle: 'off'
+        state: absent
+      failed_when: false
+
+    - name: Create the snapshot test VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        name: ansible-snapshot-integration-test
+        memory: 1024
+        disk:
+          - device: scsi0
+            storage: "{{ vm_storage }}"
+            size: 1G
+        power_cycle: 'off'
+        state: present
+      register: snapshot_vm_create
+
+    - name: Reject a snapshot name that starts with a digit  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: 101_snapshot_ansible
+        state: present
+      register: snapshot_invalid_name
+      ignore_errors: true
+
+    - name: Assert invalid snapshot name is rejected
+      ansible.builtin.assert:
+        that:
+          - snapshot_invalid_name is failed
+          - "'snapname must be 2-40 ASCII characters' in snapshot_invalid_name.msg"
+
+    - name: Predict snapshot creation in check mode
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+        vmstate: false
+        state: present
+      check_mode: true
+      register: snapshot_create_check
+
+    - name: Assert snapshot creation is predicted
+      ansible.builtin.assert:
+        that:
+          - snapshot_create_check is changed
+
+    - name: Verify check mode did not create the snapshot
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_create_check
+
+    - name: Assert the snapshot remains absent after check mode
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_create_check.snapshots | length == 0
+
+    - name: Create the snapshot
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+        vmstate: false
+        state: present
+      register: snapshot_create
+
+    - name: Assert the snapshot was created
+      ansible.builtin.assert:
+        that:
+          - snapshot_create is changed
+
+    - name: Create a second snapshot for list-all coverage
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_second_name }}"
+        description: Second snapshot for integration list testing.
+        vmstate: false
+        state: present
+      register: snapshot_second_create
+
+    - name: Assert the second snapshot was created
+      ansible.builtin.assert:
+        that:
+          - snapshot_second_create is changed
+
+    - name: List all snapshots after creating two saved snapshots
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+      register: snapshot_list_info
+
+    - name: Assert list-all returns both snapshots and the current entry
+      ansible.builtin.assert:
+        that:
+          - snapshot_list_info.snapshots | length == 3
+          - snapshot_name in (snapshot_list_info.snapshots | map(attribute='name') | list)
+          - snapshot_second_name in (snapshot_list_info.snapshots | map(attribute='name') | list)
+          - "'current' in (snapshot_list_info.snapshots | map(attribute='name') | list)"
+
+    - name: Delete the second snapshot after list-all coverage
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_second_name }}"
+        state: absent
+      register: snapshot_second_delete
+
+    - name: Assert the second snapshot was deleted
+      ansible.builtin.assert:
+        that:
+          - snapshot_second_delete is changed
+
+    - name: Get snapshot information after creation
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_created_info
+
+    - name: Assert the created snapshot information
+      ansible.builtin.assert:
+        that:
+          - snapshot_created_info.snapshots | length == 1
+          - snapshot_created_info.snapshots[0].name == snapshot_name
+          - snapshot_created_info.snapshots[0].description == 'Snapshot created by Ansible integration tests.'
+
+    - name: Create the same snapshot again
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+        vmstate: false
+        state: present
+      register: snapshot_create_again
+
+    - name: Assert snapshot creation is idempotent
+      ansible.builtin.assert:
+        that:
+          - snapshot_create_again is not changed
+
+    - name: Get snapshot information after the idempotent create
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_create_again
+
+    - name: Assert the snapshot is unchanged
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_create_again.snapshots | length == 1
+          - snapshot_after_create_again.snapshots[0].description == 'Snapshot created by Ansible integration tests.'
+
+    - name: Predict snapshot description update in check mode
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+        state: present
+      check_mode: true
+      register: snapshot_update_check
+
+    - name: Assert snapshot description update is predicted
+      ansible.builtin.assert:
+        that:
+          - snapshot_update_check is changed
+
+    - name: Verify check mode did not update the snapshot description
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_update_check
+
+    - name: Assert the original snapshot description is retained
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_update_check.snapshots | length == 1
+          - snapshot_after_update_check.snapshots[0].description == 'Snapshot created by Ansible integration tests.'
+
+    - name: Update the snapshot description
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+        state: present
+      register: snapshot_update
+
+    - name: Assert the snapshot description changed
+      ansible.builtin.assert:
+        that:
+          - snapshot_update is changed
+
+    - name: Get snapshot information after description update
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_updated_info
+
+    - name: Assert the updated snapshot description
+      ansible.builtin.assert:
+        that:
+          - snapshot_updated_info.snapshots | length == 1
+          - snapshot_updated_info.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Reapply the same snapshot description
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+        state: present
+      register: snapshot_update_again
+
+    - name: Assert the snapshot description update is idempotent
+      ansible.builtin.assert:
+        that:
+          - snapshot_update_again is not changed
+
+    - name: Get snapshot information after the idempotent update
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_update_again
+
+    - name: Assert the updated description remains set
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_update_again.snapshots | length == 1
+          - snapshot_after_update_again.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Update VM memory before rollback  # noqa: args[module]
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        memory: 2048
+        state: present
+        power_cycle: 'off'
+      register: snapshot_vm_memory_update
+
+    - name: Assert VM memory changed before rollback
+      ansible.builtin.assert:
+        that:
+          - snapshot_vm_memory_update is changed
+
+    - name: Verify VM memory is 2048 MB before rollback  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+      register: snapshot_vm_before_rollback
+
+    - name: Assert the VM has the modified memory setting
+      ansible.builtin.assert:
+        that:
+          - snapshot_vm_before_rollback.vms | length == 1
+          - snapshot_vm_before_rollback.vms[0].memory | int == 2048
+
+    - name: Predict snapshot rollback in check mode
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: rollback
+      check_mode: true
+      register: snapshot_rollback_check
+
+    - name: Assert snapshot rollback is predicted
+      ansible.builtin.assert:
+        that:
+          - snapshot_rollback_check is changed
+
+    - name: Get snapshot information after rollback check mode
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_rollback_check
+
+    - name: Assert check mode leaves the snapshot available
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_rollback_check.snapshots | length == 1
+          - snapshot_after_rollback_check.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Roll back the VM to the snapshot
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: rollback
+      register: snapshot_rollback
+
+    - name: Assert the snapshot rollback was performed
+      ansible.builtin.assert:
+        that:
+          - snapshot_rollback is changed
+
+    - name: Get VM information after rollback  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+      register: snapshot_vm_after_rollback
+
+    - name: Assert rollback restored VM memory to 1024 MB
+      ansible.builtin.assert:
+        that:
+          - snapshot_vm_after_rollback.vms | length == 1
+          - snapshot_vm_after_rollback.vms[0].memory | int == 1024
+
+    - name: Get snapshot information after rollback
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_rollback
+
+    - name: Assert the snapshot remains available after rollback
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_rollback.snapshots | length == 1
+          - snapshot_after_rollback.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Roll back to the same snapshot again
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: rollback
+      register: snapshot_rollback_again
+
+    - name: Assert rollback follows its non-idempotent contract
+      ansible.builtin.assert:
+        that:
+          - snapshot_rollback_again is changed
+
+    - name: Get snapshot information after the repeated rollback
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_rollback_again
+
+    - name: Assert the snapshot remains available after repeated rollback
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_rollback_again.snapshots | length == 1
+          - snapshot_after_rollback_again.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Get information for a snapshot that does not exist
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}-missing"
+      register: missing_snapshot_info
+
+    - name: Assert missing snapshot information is empty
+      ansible.builtin.assert:
+        that:
+          - missing_snapshot_info.snapshots | length == 0
+
+    - name: Get snapshot information for a VM that does not exist
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_missing_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: missing_vm_snapshot_info
+
+    - name: Assert missing VM snapshot information is empty
+      ansible.builtin.assert:
+        that:
+          - missing_vm_snapshot_info.snapshots | length == 0
+
+    - name: Predict snapshot deletion in check mode
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: absent
+      check_mode: true
+      register: snapshot_delete_check
+
+    - name: Assert snapshot deletion is predicted
+      ansible.builtin.assert:
+        that:
+          - snapshot_delete_check is changed
+
+    - name: Verify check mode did not delete the snapshot
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_delete_check
+
+    - name: Assert the snapshot remains after delete check mode
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_delete_check.snapshots | length == 1
+          - snapshot_after_delete_check.snapshots[0].description == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Delete the snapshot
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: absent
+      register: snapshot_delete
+
+    - name: Assert the snapshot was deleted
+      ansible.builtin.assert:
+        that:
+          - snapshot_delete is changed
+
+    - name: Get snapshot information after deletion
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_delete
+
+    - name: Assert the deleted snapshot is absent
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_delete.snapshots | length == 0
+
+    - name: Delete the same snapshot again
+      ansible.proxmox.proxmox_vm_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+        state: absent
+      register: snapshot_delete_again
+
+    - name: Assert snapshot deletion is idempotent
+      ansible.builtin.assert:
+        that:
+          - snapshot_delete_again is not changed
+
+    - name: Get snapshot information after idempotent deletion
+      ansible.proxmox.proxmox_vm_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        snapname: "{{ snapshot_name }}"
+      register: snapshot_after_delete_again
+
+    - name: Assert the snapshot remains absent
+      ansible.builtin.assert:
+        that:
+          - snapshot_after_delete_again.snapshots | length == 0
+
+  always:
+    - name: Remove the snapshot test VM
+      ansible.proxmox.proxmox_vm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid_snapshot }}"
+        power_cycle: 'off'
+        state: absent
+      failed_when: false

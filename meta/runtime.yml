@@ -11,5 +11,7 @@ action_groups:
     - proxmox_vm_info
     - proxmox_vm_powerstate
     - proxmox_vm_powerstate_info
+    - proxmox_vm_snapshot
+    - proxmox_vm_snapshot_info
     - proxmox_vm_template
     - proxmox_vm_template_info
