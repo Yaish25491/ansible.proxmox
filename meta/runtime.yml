@@ -9,6 +9,7 @@ action_groups:
     - proxmox_vm
     - proxmox_vm_clone
     - proxmox_vm_info
+    - proxmox_vm_migrate
     - proxmox_vm_powerstate
     - proxmox_vm_powerstate_info
     - proxmox_vm_snapshot

@@ -939,3 +939,51 @@ def test_wait_for_task_reports_failed_exit_status():
 
     assert failure.value.result["msg"] == "Proxmox task failed"
     assert failure.value.result["task_exit_status"] == "permission denied"
+
+
+def test_wait_for_task_includes_log_on_failure():
+    api = Mock()
+    task_endpoint = api.nodes.return_value.tasks.return_value
+    task_endpoint.status.get.return_value = {"status": "stopped", "exitstatus": "migration aborted"}
+    task_endpoint.log.get.return_value = [
+        {"n": 0, "t": "Starting migration"},
+        {"n": 1, "t": "can't migrate local disk: non-migratable snapshot exists"},
+        {"n": 2, "t": "TASK ERROR: migration aborted"},
+    ]
+    task = DummyTaskModule(FakeModule(), client=FakeClient(api))
+
+    with pytest.raises(FailJson) as failure:
+        task.wait_for_task(
+            "UPID:pve02:00000001:00000002:task",
+            timeout=10,
+            include_log_on_failure=True,
+        )
+
+    result = failure.value.result
+    assert result["task_exit_status"] == "migration aborted"
+    assert result["task_log"] == [
+        "Starting migration",
+        "can't migrate local disk: non-migratable snapshot exists",
+        "TASK ERROR: migration aborted",
+    ]
+    assert "non-migratable snapshot exists" in result["msg"]
+    task_endpoint.log.get.assert_called_once_with(limit=50)
+
+
+def test_wait_for_task_log_read_failure_does_not_mask_task_failure():
+    api = Mock()
+    task_endpoint = api.nodes.return_value.tasks.return_value
+    task_endpoint.status.get.return_value = {"status": "stopped", "exitstatus": "migration aborted"}
+    task_endpoint.log.get.side_effect = RuntimeError("task log unavailable")
+    task = DummyTaskModule(FakeModule(), client=FakeClient(api))
+
+    with pytest.raises(FailJson) as failure:
+        task.wait_for_task(
+            "UPID:pve02:00000001:00000002:task",
+            timeout=10,
+            include_log_on_failure=True,
+        )
+
+    assert failure.value.result["msg"] == "Proxmox task failed"
+    assert failure.value.result["task_exit_status"] == "migration aborted"
+    assert "task_log" not in failure.value.result

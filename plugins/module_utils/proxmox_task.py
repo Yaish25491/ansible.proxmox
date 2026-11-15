@@ -32,7 +32,7 @@ class ProxmoxTask(ProxmoxBase):
             raise ValueError("Invalid Proxmox task UPID")
         return parts[1]
 
-    def wait_for_task(self, upid, node=None, timeout=None, poll_interval=1):
+    def wait_for_task(self, upid, node=None, timeout=None, poll_interval=1, include_log_on_failure=False):
         """Poll a task until it stops, failing for task errors or a timeout.
 
         Args:
@@ -42,6 +42,7 @@ class ProxmoxTask(ProxmoxBase):
                 task_timeout parameter, falling back to 300 seconds when omitted.
                 Zero waits indefinitely; negative values fail the module.
             poll_interval: Positive number of seconds between status requests.
+            include_log_on_failure: Whether to include task log lines in a failed result.
 
         Returns:
             The final stopped-task status mapping.
@@ -61,7 +62,8 @@ class ProxmoxTask(ProxmoxBase):
 
         node = node or self.task_node(upid)
         deadline = time.monotonic() + timeout if timeout else None
-        endpoint = self.api.nodes(node).tasks(upid).status
+        task_endpoint = self.api.nodes(node).tasks(upid)
+        endpoint = task_endpoint.status
         status = self.call_api("Retrieving Proxmox task status", endpoint.get)
 
         while status.get("status") != "stopped":
@@ -72,5 +74,26 @@ class ProxmoxTask(ProxmoxBase):
 
         exit_status = status.get("exitstatus")
         if exit_status and exit_status != "OK":
-            self.module.fail_json(msg="Proxmox task failed", task=upid, task_exit_status=exit_status)
+            failure = {"msg": "Proxmox task failed", "task": upid, "task_exit_status": exit_status}
+            if include_log_on_failure:
+                task_log = self._read_task_log(task_endpoint)
+                if task_log:
+                    failure["task_log"] = task_log[-20:]
+                    failure["msg"] = "Proxmox task failed: {0}. Task log: {1}".format(
+                        exit_status, " | ".join(task_log[-5:])
+                    )
+            self.module.fail_json(**failure)
         return status
+
+    @staticmethod
+    def _read_task_log(task_endpoint):
+        """Best-effort retrieval of task log lines without masking task failure."""
+        try:
+            entries = task_endpoint.log.get(limit=50)
+        except Exception:
+            return []
+        return [
+            entry["t"]
+            for entry in entries or []
+            if isinstance(entry, dict) and isinstance(entry.get("t"), str)
+        ]

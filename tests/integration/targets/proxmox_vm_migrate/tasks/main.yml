@@ -1,0 +1,205 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise VM migration between cluster nodes
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Check the migration VMID is unused on the source node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_source_before
+
+    - name: Check the migration VMID is unused on the target node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_target_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_target_before
+
+    - name: Refuse to modify an existing VM
+      ansible.builtin.assert:
+        that:
+          - migration_vm_source_before.vms | length == 0
+          - migration_vm_target_before.vms | length == 0
+        fail_msg: The random migration VMID is already in use; rerun the target.
+
+    - name: Create a test VM with a CD-ROM on the source node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        name: "ansible-migrate-{{ migration_vmid }}"
+        memory: 512
+        cores: 1
+        cpu: kvm64
+        ostype: l26
+        ide2: cdrom
+        state: present
+      register: migration_vm_create
+
+    - name: Assert the CD-ROM test VM was created
+      ansible.builtin.assert:
+        that:
+          - migration_vm_create is changed
+
+    - name: Read the test VM configuration with the CD-ROM attached  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_cdrom_info
+
+    - name: Assert the test VM has a CD-ROM device
+      ansible.builtin.assert:
+        that:
+          - migration_vm_cdrom_info.vms | length == 1
+          - "'media=cdrom' in migration_vm_cdrom_info.vms[0].ide2"
+
+    - name: Check-mode migration is rejected when the VM has a local CD-ROM  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_migrate:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        target: "{{ migration_target_node }}"
+      check_mode: true
+      register: migration_cdrom_check_rejection
+      ignore_errors: true
+
+    - name: Assert check mode reports the local CD-ROM blocker
+      ansible.builtin.assert:
+        that:
+          - migration_cdrom_check_rejection is failed
+          - "'Cannot migrate VM with local CD/DVD devices.' in migration_cdrom_check_rejection.msg"
+
+    - name: Attempt migration and capture the expected CD-ROM rejection  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_migrate:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        target: "{{ migration_target_node }}"
+      register: migration_cdrom_rejection
+      ignore_errors: true
+
+    - name: Assert migration was rejected because of the local CD-ROM
+      ansible.builtin.assert:
+        that:
+          - migration_cdrom_rejection is failed
+          - "'Cannot migrate VM with local CD/DVD devices.' in migration_cdrom_rejection.msg"
+
+    - name: Clear the CD-ROM media and start the test VM  # noqa: args[module]
+      ansible.proxmox.proxmox_vm:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        ide2: none
+        power_cycle: 'on'
+      register: migration_vm_start
+
+    - name: Assert the CD-ROM media was cleared and the VM update changed state
+      ansible.builtin.assert:
+        that:
+          - migration_vm_start is changed
+
+    - name: Verify the VM configuration after clearing the CD-ROM media  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_ready_info
+
+    - name: Assert the CD-ROM media is empty
+      ansible.builtin.assert:
+        that:
+          - migration_vm_ready_info.vms | length == 1
+          - migration_vm_ready_info.vms[0].ide2.startswith('none,')
+
+    - name: Verify the test VM is running  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_powerstate_info:
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_powerstate
+
+    - name: Assert the test VM is running
+      ansible.builtin.assert:
+        that:
+          - migration_vm_powerstate.powerstate == 'running'
+
+    - name: Predict online migration in check mode  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_migrate:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        target: "{{ migration_target_node }}"
+        online: true
+        task_timeout: 1800
+      check_mode: true
+      register: migration_check_mode
+
+    - name: Assert migration was predicted without submitting a task
+      ansible.builtin.assert:
+        that:
+          - migration_check_mode is changed
+          - migration_check_mode.task_upid is not defined
+
+    - name: Verify check mode kept the VM on the source node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_after_check_mode
+
+    - name: Assert check mode did not migrate the VM
+      ansible.builtin.assert:
+        that:
+          - migration_vm_after_check_mode.vms | length == 1
+
+    - name: Migrate the running VM to the target node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_migrate:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+        target: "{{ migration_target_node }}"
+        online: true
+        task_timeout: 1800
+      register: migration_result
+
+    - name: Assert migration completed
+      ansible.builtin.assert:
+        that:
+          - migration_result is changed
+          - migration_result.task_upid is defined
+
+    - name: Verify the VM configuration on the target node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_target_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_target_info
+
+    - name: Assert the migrated VM is present on the target node
+      ansible.builtin.assert:
+        that:
+          - migration_vm_target_info.vms | length == 1
+          - migration_vm_target_info.vms[0].name == 'ansible-migrate-' ~ migration_vmid
+
+    - name: Verify the VM is no longer on the source node  # noqa: args[module]
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ migration_source_node }}"
+        vmid: "{{ migration_vmid }}"
+      register: migration_vm_source_after
+
+    - name: Assert the source node no longer has the VM
+      ansible.builtin.assert:
+        that:
+          - migration_vm_source_after.vms | length == 0
+
+  always:
+    - name: Delete the migration test VM from the target node if it was created  # noqa: args[module]
+      ansible.proxmox.proxmox_vm:
+        node: "{{ migration_target_node }}"
+        vmid: "{{ migration_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      register: migration_vm_delete
+      when:
+        - migration_vm_create is defined
+        - migration_vm_create is changed
