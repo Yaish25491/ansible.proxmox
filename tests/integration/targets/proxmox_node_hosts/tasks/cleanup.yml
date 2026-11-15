@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read current hosts before restoring owned changes  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_cleanup_current
+  ignore_errors: true
+
+- name: Restore only a recognized owned file using its current digest  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_hosts:
+    node: "{{ proxmox_node }}"
+    data: "{{ hosts_original.data }}"
+    digest: "{{ hosts_cleanup_current.nodes[0].hosts.digest }}"
+  when:
+    - hosts_cleanup_current is succeeded
+    - hosts_cleanup_current.nodes | length == 1
+    - hosts_cleanup_current.nodes[0].hosts.data in [hosts_original.data, hosts_variant_ipv4, hosts_variant_ipv6]
+  register: hosts_restoration
+  ignore_errors: true
+
+- name: Independently read hosts after restoration  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [hosts]
+  register: hosts_restoration_info
+  ignore_errors: true
+
+- name: Require successful restoration with exact original contents and digest
+  ansible.builtin.assert:
+    that:
+      - hosts_restoration is succeeded
+      - hosts_restoration_info is succeeded
+      - hosts_restoration_info.nodes | length == 1
+      - hosts_restoration_info.nodes[0].hosts == hosts_original
+    fail_msg: >-
+      Exact hosts restoration could not be verified. Unrecognized concurrent edits are not overwritten.
+      Inspect the node hosts file before further testing.

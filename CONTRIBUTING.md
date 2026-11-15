@@ -73,3 +73,36 @@ restoration. UTC and local timestamps are observations that advance naturally;
 they are never restored or compared for exact equality. Recovery requires API
 access, and the API has no concurrency digest. The role-local defaults apply to
 both local and CI runs; the shared generator and workflow require no changes.
+
+## Node hosts integration tests
+
+The `proxmox_node_hosts` target uses `proxmox_node_info` to verify complete hosts
+contents and digests. Set `proxmox_node` in the private integration configuration
+to a disposable node with independent recovery access, then run:
+
+```bash
+ansible-test integration proxmox_node_hosts
+```
+
+Mutation scenarios run by default. They preserve existing entries and append a
+unique test mapping, change that mapping, exercise digest conflicts and restore
+the original contents in `always`. Cleanup checks ownership and supplies the
+current digest; it fails verification rather than overwriting unrecognized
+concurrent edits. API access is still required for restoration.
+
+The target also verifies the missing-node error path, cleanup refusal for an
+unrecognized version of its own fixture, and continued verification after a
+restore-module failure caused by an invalid request timeout. The outer cleanup
+then restores and verifies the original file with normal connection options.
+
+For information, validation and check-mode scenarios without writes, add this
+setting to `tests/integration/integration_config.yml` after generating it:
+
+```yaml
+hosts_test_allow_reconfiguration: false
+```
+
+The live target never empties the hosts file. Empty-file replacement is covered
+by unit tests and check-mode predictions. Target defaults apply equally to local
+and CI runs; the shared configuration generator and workflow need no host-specific
+configuration.

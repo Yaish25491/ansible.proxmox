@@ -1,0 +1,75 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset hosts restoration ownership for this invocation
+  ansible.builtin.set_fact:
+    hosts_restore_allowed: false
+
+- name: Exercise node hosts configuration and information together
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Read current hosts through the information module
+      ansible.proxmox.proxmox_node_info:
+        node: "{{ proxmox_node }}"
+        gather_subset: [hosts]
+      register: hosts_initial
+
+    - name: Require a complete configuration and an unused fixture name
+      ansible.builtin.assert:
+        that:
+          - hosts_initial is not changed
+          - hosts_initial.nodes | length == 1
+          - hosts_initial.nodes[0].hosts.data is string
+          - hosts_initial.nodes[0].hosts.digest | length == 40
+          - hosts_test_name not in hosts_initial.nodes[0].hosts.data
+
+    - name: Capture exact original data and construct two owned variants
+      ansible.builtin.set_fact:
+        hosts_original: "{{ hosts_initial.nodes[0].hosts }}"
+        hosts_variant_ipv4: "{{ hosts_initial.nodes[0].hosts.data ~ '\n# ' ~ hosts_test_name ~ '\n192.0.2.42 ' ~ hosts_test_name ~ '\n' }}"
+        hosts_variant_ipv6: "{{ hosts_initial.nodes[0].hosts.data ~ '\n# ' ~ hosts_test_name ~ '\n2001:db8::42 ' ~ hosts_test_name ~ '\n' }}"
+
+    - name: Validate that the captured file is exactly restorable
+      ansible.proxmox.proxmox_node_hosts:
+        node: "{{ proxmox_node }}"
+        data: "{{ hosts_original.data }}"
+        digest: "{{ hosts_original.digest }}"
+      check_mode: true
+      register: hosts_restoration_preflight
+
+    - name: Require an unchanged restoration prediction
+      ansible.builtin.assert:
+        that:
+          - hosts_restoration_preflight is not changed
+          - hosts_restoration_preflight.hosts == hosts_original
+
+    - name: Test predictions input validation and stale digests without writes
+      ansible.builtin.include_tasks: check_mode.yml
+
+    - name: Test hosts mutations on the designated disposable node
+      when: hosts_test_allow_reconfiguration | bool
+      block:
+        - name: Claim restoration after the original file passes validation
+          ansible.builtin.set_fact:
+            hosts_restore_allowed: true
+
+        - name: Test guarded replacement no-ops and conflicts with independent reads
+          ansible.builtin.include_tasks: lifecycle.yml
+
+        - name: Exercise cleanup refusal and restoration failure handling
+          ansible.builtin.include_tasks: cleanup_scenarios.yml
+
+  always:
+    - name: Restore owned hosts changes and independently verify the original file
+      ansible.builtin.include_tasks: cleanup.yml
+      when: hosts_restore_allowed | default(false)
