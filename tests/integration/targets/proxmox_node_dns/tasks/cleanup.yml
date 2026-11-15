@@ -1,0 +1,27 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Restore captured DNS settings  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_original.get('search', '') }}"
+    dns_servers: "{{ dns_original_servers }}"
+  register: dns_restoration
+  ignore_errors: true
+
+- name: Independently read DNS after restoration  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_restoration_info
+  ignore_errors: true
+
+- name: Require successful restoration and exact original API settings
+  ansible.builtin.assert:
+    that:
+      - dns_restoration is succeeded
+      - dns_restoration_info is succeeded
+      - dns_restoration_info.nodes | length == 1
+      - dns_restoration_info.nodes[0].dns == dns_original
+    fail_msg: DNS restoration could not be verified. Inspect the node DNS configuration before further testing.

@@ -1,0 +1,67 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict a search-domain change while preserving servers
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_test_search }}"
+  check_mode: true
+  register: dns_prediction
+
+- name: Read DNS after the search-domain prediction
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_prediction
+
+- name: Verify the prediction and unchanged server configuration
+  ansible.builtin.assert:
+    that:
+      - dns_prediction is changed
+      - dns_prediction.dns == dict(dns_original, search=dns_test_search)
+      - dns_after_prediction is not changed
+      - dns_after_prediction.nodes[0].dns == dns_original
+      - dns_after_prediction.nodes[0].hosts is not defined
+
+- name: Predict all three server slots without replacing working resolvers
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: "{{ dns_test_search }}"
+    dns_servers: "{{ dns_test_servers }}"
+  check_mode: true
+  register: dns_servers_prediction
+
+- name: Read DNS after the server prediction
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_servers_prediction
+
+- name: Verify all predicted slots and unchanged actual resolver settings
+  ansible.builtin.assert:
+    that:
+      - dns_servers_prediction is changed
+      - dns_servers_prediction.dns == dict(search=dns_test_search, dns1=dns_test_servers[0], dns2=dns_test_servers[1], dns3=dns_test_servers[2])
+      - dns_after_servers_prediction.nodes[0].dns == dns_original
+
+- name: Predict clearing DNS without removing working resolvers
+  ansible.proxmox.proxmox_node_dns:
+    node: "{{ proxmox_node }}"
+    search: ''
+    dns_servers: []
+  check_mode: true
+  register: dns_initial_clear_prediction
+
+- name: Read DNS after the clearing prediction
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [dns]
+  register: dns_after_initial_clear_prediction
+
+- name: Verify clearing is predicted without changing actual DNS
+  ansible.builtin.assert:
+    that:
+      - dns_initial_clear_prediction.dns == {}
+      - (dns_initial_clear_prediction is changed) == (dns_original | length > 0)
+      - dns_after_initial_clear_prediction.nodes[0].dns == dns_original
