@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read current timezone before restoring owned changes  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_cleanup_current
+  ignore_errors: true
+
+- name: Restore only a recognized timezone owned by this run  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_original_timezone }}"
+  when:
+    - time_cleanup_current is succeeded
+    - time_cleanup_current.nodes | length == 1
+    - time_cleanup_current.nodes[0].time.timezone in time_owned_timezones
+  register: time_restoration
+  ignore_errors: true
+
+- name: Independently read time after restoration  # noqa: args[module] connection options come from the enclosing module_defaults
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_restoration_info
+  ignore_errors: true
+
+- name: Require successful restoration of the original timezone
+  ansible.builtin.assert:
+    that:
+      - time_cleanup_current is succeeded
+      - time_restoration is succeeded
+      - time_restoration_info is succeeded
+      - time_restoration_info.nodes | length == 1
+      - time_restoration_info.nodes[0].time.timezone == time_original_timezone
+    fail_msg: >-
+      Timezone restoration could not be verified. Unrecognized concurrent changes are not overwritten.
+      Inspect the node timezone before further testing.

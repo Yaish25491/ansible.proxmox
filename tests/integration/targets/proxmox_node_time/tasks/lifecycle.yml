@@ -1,0 +1,96 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Configure the first test timezone
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[0] }}"
+  register: time_first_change
+
+- name: Read the first timezone independently
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_first_info
+
+- name: Verify the first change and fresh API observations
+  ansible.builtin.assert:
+    that:
+      - time_first_change is changed
+      - time_first_change.time.timezone == time_variants[0]
+      - time_first_change.time.time is number
+      - time_first_change.time.localtime is number
+      - time_first_info is not changed
+      - time_first_info.nodes[0].time.timezone == time_variants[0]
+      - time_first_info.nodes[0].time.time is number
+      - time_first_info.nodes[0].time.localtime is number
+
+- name: Repeat the first timezone without a write
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[0] }}"
+  register: time_first_repeat
+
+- name: Predict the second timezone without applying it
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[1] }}"
+  check_mode: true
+  register: time_second_prediction
+
+- name: Read the first timezone after the second prediction
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_after_second_prediction
+
+- name: Verify repeat idempotency and prediction immutability
+  ansible.builtin.assert:
+    that:
+      - time_first_repeat is not changed
+      - time_first_repeat.time.timezone == time_variants[0]
+      - time_second_prediction is changed
+      - time_second_prediction.time == dict(timezone=time_variants[1])
+      - time_after_second_prediction.nodes[0].time.timezone == time_variants[0]
+
+- name: Configure the second test timezone
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[1] }}"
+  register: time_second_change
+
+- name: Verify the second timezone is already satisfied in check mode
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[1] }}"
+  check_mode: true
+  register: time_second_noop
+
+- name: Reject a timezone unavailable on the node
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_test_invalid_timezone }}"
+  register: time_invalid_change
+  ignore_errors: true
+
+- name: Read actual settings after the second update and rejected invalid timezone
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_second_info
+
+- name: Verify the second transition no-op and server validation failure
+  ansible.builtin.assert:
+    that:
+      - time_second_change is changed
+      - time_second_change.time.timezone == time_variants[1]
+      - time_second_noop is not changed
+      - time_second_noop.time.timezone == time_variants[1]
+      - time_second_noop.time.time is number
+      - time_invalid_change is failed
+      - time_invalid_change is not changed
+      - time_invalid_change.status_code == 400
+      - "'No such timezone' in time_invalid_change.api_error"
+      - time_second_info is not changed
+      - time_second_info.nodes[0].time.timezone == time_variants[1]
