@@ -106,7 +106,7 @@ def pool_environment():
 
 @pytest.fixture
 def node_environment():
-    """Model DNS replacement semantics with the real shared error and mutation handling."""
+    """Model node configuration with the real shared error and mutation handling."""
     def create(check_mode=False, dns=None, **parameters):
         params = dict(node="pve01", search=None, dns_servers=None, gather_subset=None)
         params.update(parameters)
@@ -137,9 +137,19 @@ def node_environment():
             records["dns"] = result
 
         dns_endpoint.put = Mock(side_effect=put)
-        nodes = Mock(return_value=SimpleNamespace(dns=dns_endpoint))
+        time_endpoint = SimpleNamespace(get=Mock(side_effect=lambda: copy.deepcopy(records["time"])))
+
+        def set_timezone(timezone):
+            # Model synchronous timezone writes, leaving the UTC clock unchanged.
+            offsets = {"UTC": 0, "Etc/UTC": 0, "Europe/Berlin": 3600, "America/New_York": -18000, "Asia/Kathmandu": 20700}
+            if timezone not in offsets:
+                raise ValueError("No such timezone")
+            records["time"].update(timezone=timezone, localtime=records["time"]["time"] + offsets[timezone])
+
+        time_endpoint.put = Mock(side_effect=set_timezone)
+        nodes = Mock(return_value=SimpleNamespace(dns=dns_endpoint, time=time_endpoint))
         nodes.get.return_value = [{"node": "pve01", "status": "online"}, {"node": "pve02", "status": "offline"}]
-        api = SimpleNamespace(nodes=nodes, records=records, dns=dns_endpoint)
+        api = SimpleNamespace(nodes=nodes, records=records, dns=dns_endpoint, time=time_endpoint)
         api.get = Mock(side_effect=lambda path: copy.deepcopy(records[path.rsplit("/", 1)[-1]]))
         client._api = api
         client.validate_pve_permissions = Mock()

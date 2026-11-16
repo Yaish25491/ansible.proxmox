@@ -1,0 +1,62 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset expected cleanup failure evidence
+  ansible.builtin.set_fact:
+    time_guard_refusal_seen: false
+    time_restore_failure_seen: false
+
+- name: Exercise ownership refusal using only the current test timezone
+  block:
+    - name: Run actual cleanup with an empty ownership allowlist
+      ansible.builtin.include_tasks: cleanup.yml
+      vars:
+        time_owned_timezones: []
+
+  rescue:
+    - name: Verify ownership refusal still performed the independent final read
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.name == 'Require successful restoration of the original timezone'
+          - "'Timezone restoration could not be verified' in ansible_failed_result.msg"
+          - time_restoration is skipped
+          - time_restoration_info is succeeded
+          - time_restoration_info.nodes[0].time.timezone == time_variants[1]
+
+    - name: Record the expected ownership refusal
+      ansible.builtin.set_fact:
+        time_guard_refusal_seen: true
+
+- name: Require the ownership guard to expose unresolved restoration
+  ansible.builtin.assert:
+    that:
+      - time_guard_refusal_seen | bool
+
+- name: Exercise a restore failure before any write
+  module_defaults:
+    ansible.proxmox.proxmox_node_time:
+      api_timeout: 0
+  block:
+    - name: Run actual cleanup with an invalid restore request timeout
+      ansible.builtin.include_tasks: cleanup.yml
+
+  rescue:
+    - name: Verify failed restoration still performed the independent final read
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.name == 'Require successful restoration of the original timezone'
+          - "'Timezone restoration could not be verified' in ansible_failed_result.msg"
+          - time_restoration is failed
+          - time_restoration is not changed
+          - time_restoration_info is succeeded
+          - time_restoration_info.nodes[0].time.timezone == time_variants[1]
+
+    - name: Record the expected restore failure
+      ansible.builtin.set_fact:
+        time_restore_failure_seen: true
+
+- name: Require failed restoration to remain visible
+  ansible.builtin.assert:
+    that:
+      - time_restore_failure_seen | bool

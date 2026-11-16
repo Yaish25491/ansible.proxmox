@@ -1,0 +1,72 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict a timezone change without writing settings
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: "{{ time_variants[0] }}"
+  check_mode: true
+  register: time_prediction
+
+- name: Independently read time after the prediction in check mode
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  check_mode: true
+  register: time_after_prediction
+
+- name: Verify the timezone-only prediction and unchanged actual settings
+  ansible.builtin.assert:
+    that:
+      - time_prediction is changed
+      - time_prediction.time == dict(timezone=time_variants[0])
+      - time_after_prediction is not changed
+      - time_after_prediction.nodes[0].time.timezone == time_original_timezone
+      - time_after_prediction.nodes[0].time.time is number
+      - time_after_prediction.nodes[0].time.localtime is number
+
+- name: Verify the randomized missing node does not exist
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ time_test_missing_node }}"
+    gather_subset: [time]
+  register: time_missing_info
+
+- name: Require an unused node name before exercising the missing-node error
+  ansible.builtin.assert:
+    that:
+      - time_missing_info is not changed
+      - time_missing_info.nodes == []
+
+- name: Reject timezone changes for a nonexistent node in check mode
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ time_test_missing_node }}"
+    timezone: "{{ time_variants[0] }}"
+  check_mode: true
+  register: time_missing_prediction
+  ignore_errors: true
+
+- name: Reject an empty timezone without writing settings
+  ansible.proxmox.proxmox_node_time:
+    node: "{{ proxmox_node }}"
+    timezone: ''
+  check_mode: true
+  register: time_empty_prediction
+  ignore_errors: true
+
+- name: Read actual timezone after rejected predictions
+  ansible.proxmox.proxmox_node_info:
+    node: "{{ proxmox_node }}"
+    gather_subset: [time]
+  register: time_after_rejections
+
+- name: Verify useful failures and unchanged original timezone
+  ansible.builtin.assert:
+    that:
+      - time_missing_prediction is failed
+      - time_missing_prediction is not changed
+      - "'does not exist' in time_missing_prediction.msg"
+      - time_empty_prediction is failed
+      - time_empty_prediction is not changed
+      - "'non-empty timezone' in time_empty_prediction.msg"
+      - time_after_rejections.nodes[0].time.timezone == time_original_timezone

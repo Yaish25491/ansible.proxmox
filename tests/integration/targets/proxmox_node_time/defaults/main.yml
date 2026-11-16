@@ -1,0 +1,14 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+proxmox_node: pve01
+# Timezone changes affect local scheduling on the entire node. Use a designated
+# test node with no concurrent timezone changes; set false for read-only checks.
+time_test_allow_reconfiguration: true
+time_test_timezones:
+  - Etc/UTC
+  - Europe/Berlin
+  - America/New_York
+time_test_missing_node: "ansible-missing-{{ integration_resource_ids[0] }}-{{ integration_resource_ids[1] }}"
+time_test_invalid_timezone: "Ansible/Invalid-{{ integration_resource_ids[0] }}-{{ integration_resource_ids[1] }}"

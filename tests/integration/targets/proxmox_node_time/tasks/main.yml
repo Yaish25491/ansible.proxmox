@@ -1,0 +1,89 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset restoration ownership for this invocation
+  ansible.builtin.set_fact:
+    time_restore_allowed: false
+
+- name: Exercise node timezone configuration and information together
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Read original timezone and clock observations independently
+      ansible.proxmox.proxmox_node_info:
+        node: "{{ proxmox_node }}"
+        gather_subset: [time]
+      register: time_initial
+
+    - name: Require complete original settings before claiming restoration
+      ansible.builtin.assert:
+        that:
+          - time_initial is not changed
+          - time_initial.nodes | length == 1
+          - time_initial.nodes[0].node == proxmox_node
+          - time_initial.nodes[0].time.timezone | length > 0
+          - time_initial.nodes[0].time.time is number
+          - time_initial.nodes[0].time.localtime is number
+          - time_initial.nodes[0].time.time > 0
+          - time_initial.nodes[0].time.localtime > 0
+          - time_initial.nodes[0].dns is not defined
+          - time_initial.nodes[0].hosts is not defined
+
+    - name: Capture original timezone and choose distinct test settings
+      ansible.builtin.set_fact:
+        time_original_timezone: "{{ time_initial.nodes[0].time.timezone }}"
+        time_variants: "{{ time_test_timezones | unique | reject('equalto', time_initial.nodes[0].time.timezone) | list }}"
+
+    - name: Require two alternate timezones for transition coverage
+      ansible.builtin.assert:
+        that:
+          - time_variants | length >= 2
+
+    - name: Record timezone values owned by this run for guarded restoration
+      ansible.builtin.set_fact:
+        time_owned_timezones: "{{ [time_original_timezone, time_variants[0], time_variants[1]] }}"
+
+    - name: Validate that the captured timezone requires no restoration write
+      ansible.proxmox.proxmox_node_time:
+        node: "{{ proxmox_node }}"
+        timezone: "{{ time_original_timezone }}"
+      check_mode: true
+      register: time_restoration_preflight
+
+    - name: Require a restorable original timezone and actual clock observations
+      ansible.builtin.assert:
+        that:
+          - time_restoration_preflight is not changed
+          - time_restoration_preflight.time.timezone == time_original_timezone
+          - time_restoration_preflight.time.time is number
+          - time_restoration_preflight.time.localtime is number
+
+    - name: Verify predictions and missing-node behavior without writes
+      ansible.builtin.include_tasks: check_mode.yml
+
+    - name: Test timezone mutations on the designated test node
+      when: time_test_allow_reconfiguration | bool
+      block:
+        - name: Permit guarded restoration after validating original settings
+          ansible.builtin.set_fact:
+            time_restore_allowed: true
+
+        - name: Test timezone updates no-ops and server validation
+          ansible.builtin.include_tasks: lifecycle.yml
+
+        - name: Verify guarded restoration reports refusal and restore failures
+          ansible.builtin.include_tasks: cleanup_scenarios.yml
+
+  always:
+    - name: Restore and independently verify the original timezone
+      ansible.builtin.include_tasks: cleanup.yml
+      when: time_restore_allowed | default(false)
