@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: proxmox-integration
+  group: proxmox-integration-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
