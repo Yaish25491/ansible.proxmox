@@ -9,6 +9,7 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 import copy
+from urllib.parse import unquote
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -163,5 +164,110 @@ def node_environment():
         api.get = Mock(side_effect=lambda path: copy.deepcopy(records[path.rsplit("/", 1)[-1]]))
         client._api = api
         client.validate_pve_permissions = Mock()
+        return module, client, api
+    return create
+
+
+class IdentityApi:
+    """Stateful PVE identity API boundary shared by action/info unit consumers."""
+
+    def __init__(self):
+        self.users = {}
+        self.groups = {}
+        self.roles = {"Administrator": {"VM.Audit", "Sys.Audit", "VM.Console"}}
+        self.tokens = {}
+        self.domains = [{"realm": "pve"}, {"realm": "pam"}]
+        self.get = Mock(side_effect=self._get)
+        self.post = Mock(side_effect=self._post)
+        self.put = Mock(side_effect=self._put)
+        self.delete = Mock(side_effect=self._delete)
+
+    def _get(self, path, **parameters):
+        parts = [unquote(part) for part in path.split("/")]
+        if path == "access/domains":
+            return copy.deepcopy(self.domains)
+        if parts[1] == "roles":
+            if len(parts) == 2:
+                return [{"roleid": key, "privs": ",".join(sorted(value)), "special": int(key == "Administrator")}
+                        for key, value in self.roles.items()]
+            return dict.fromkeys(self.roles[parts[2]], 1)
+        if parts[1] == "groups":
+            if len(parts) == 2:
+                return [dict(value, groupid=key, users=",".join(sorted(self._members(key)))) for key, value in self.groups.items()]
+            return dict(self.groups[parts[2]], members=sorted(self._members(parts[2])))
+        if len(parts) > 3:
+            if len(parts) == 4:
+                return [dict(value, tokenid=key[1]) for key, value in self.tokens.items() if key[0] == parts[2]]
+            return copy.deepcopy(self.tokens[parts[2], parts[4]])
+        if len(parts) == 2:
+            result = [dict(copy.deepcopy(value), userid=key) for key, value in self.users.items()]
+            if not parameters.get("full"):
+                for entry in result:
+                    entry.pop("groups", None)
+            return result
+        return copy.deepcopy(self.users[parts[2]])
+
+    def _members(self, groupid):
+        return {userid for userid, data in self.users.items() if groupid in data.get("groups", [])}
+
+    def _post(self, path, **parameters):
+        parts = [unquote(part) for part in path.split("/")]
+        if parts[1] == "roles":
+            self.roles[parameters["roleid"]] = set(filter(None, parameters.get("privs", "").split(",")))
+        elif parts[1] == "groups":
+            self.groups[parameters["groupid"]] = {key: value for key, value in parameters.items()
+                                                  if key == "comment" and value not in ("", "0", None)}
+        elif len(parts) > 3:
+            data = {"privsep": parameters.get("privsep", 1)}
+            data.update({key: value for key, value in parameters.items() if key == "expire" or (key == "comment" and value not in ("", "0", None))})
+            self.tokens[parts[2], parts[4]] = data
+            return {"value": "EXAMPLE-one-time-secret", "info": copy.deepcopy(data), "full-tokenid": "{0}!{1}".format(parts[2], parts[4])}
+        else:
+            data = {"enable": parameters.get("enable", 1), "groups": list(filter(None, parameters.get("groups", "").split(",")))}
+            data.update({key: value for key, value in parameters.items() if key in ("expire", "email", "firstname", "lastname", "comment")
+                         and value not in ("", "0", None)})
+            self.users[parameters["userid"]] = data
+        return None
+
+    def _put(self, path, **parameters):
+        parts = [unquote(part) for part in path.split("/")]
+        if parts[1] == "roles":
+            self.roles[parts[2]] = set(filter(None, parameters["privs"].split(",")))
+            return None
+        if parts[1] == "groups":
+            self.groups[parts[2]].update(parameters)
+        elif len(parts) > 3:
+            self.tokens[parts[2], parts[4]].update({key: value for key, value in parameters.items()
+                                                   if key != "comment" or value not in ("", "0", None)})
+        else:
+            data = dict(parameters)
+            if "groups" in data:
+                data["groups"] = list(filter(None, data["groups"].split(",")))
+            self.users[parts[2]].update(data)
+        return None
+
+    def _delete(self, path):
+        parts = [unquote(part) for part in path.split("/")]
+        if parts[1] == "roles":
+            del self.roles[parts[2]]
+        elif parts[1] == "groups":
+            del self.groups[parts[2]]
+            for user in self.users.values():
+                user["groups"] = [group for group in user.get("groups", []) if group != parts[2]]
+        elif len(parts) > 3:
+            del self.tokens[parts[2], parts[4]]
+        else:
+            del self.users[parts[2]]
+            self.tokens = {key: value for key, value in self.tokens.items() if key[0] != parts[2]}
+        return None
+
+
+@pytest.fixture
+def identity_environment(pool_environment):
+    """Reuse production error handling and result exceptions for identity APIs."""
+    def create(check_mode=False, **parameters):
+        module, client, _api = pool_environment(check_mode=check_mode, **parameters)
+        api = IdentityApi()
+        client._api = api
         return module, client, api
     return create

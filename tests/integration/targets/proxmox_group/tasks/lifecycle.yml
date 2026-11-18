@@ -1,0 +1,217 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict group creation with all members
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    comment: Owned group fixture
+    members: '{{ group_test_users }}'
+  register: group_prediction
+  check_mode: true
+- name: Verify prediction did not create the group
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_prediction
+- name: Verify complete membership prediction without writes
+  ansible.builtin.assert:
+    that:
+      - group_prediction is changed
+      - group_prediction.group.comment == 'Owned group fixture'
+      - group_prediction.group.members == group_test_users | sort
+      - group_after_prediction.groups == []
+- name: Create the owned group and memberships
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    comment: Owned group fixture
+    members: '{{ group_test_users }}'
+  register: group_created
+- name: Independently read group membership
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_actual
+- name: Verify exact actual membership
+  ansible.builtin.assert:
+    that:
+      - group_created is changed
+      - group_actual.groups[0].comment == 'Owned group fixture'
+      - group_actual.groups[0].members == group_test_users | sort
+- name: Exercise list and selected information reads including check mode
+  ansible.builtin.include_tasks: information.yml
+- name: Omit populated membership and comment
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+  register: group_populated_omitted
+- name: Independently read preserved populated values
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_omission
+- name: Verify omission preserves populated values
+  ansible.builtin.assert:
+    that:
+      - group_populated_omitted is not changed
+      - group_after_omission.groups == group_actual.groups
+- name: Exercise membership for each remaining special identifier
+  ansible.builtin.include_tasks: special_member.yml
+  loop: '{{ group_test_special_users }}'
+  loop_control:
+    loop_var: group_special_user
+- name: Independently read affected users
+  proxmox_group_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_member_actual
+  loop: '{{ group_test_users }}'
+- name: Verify unrelated user groups were preserved
+  ansible.builtin.assert:
+    that:
+      - group_member_actual.results[0].fixture.groups | sort == [group_test_id, group_test_other] | sort
+      - group_member_actual.results[1].fixture.groups | sort == [group_test_id, group_test_other] | sort
+- name: Repeat with reordered member identifiers
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ group_test_users | reverse | list }}'
+  register: group_repeat
+- name: Verify group membership idempotency
+  ansible.builtin.assert:
+    that:
+      - group_repeat is not changed
+- name: Predict removing one member
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_users[0]] }}'
+    membership_mode: absent
+  register: group_remove_prediction
+  check_mode: true
+- name: Verify predicted removal retained actual members
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_before_remove
+- name: Verify member removal check mode
+  ansible.builtin.assert:
+    that:
+      - group_remove_prediction is changed
+      - group_remove_prediction.group.members == [group_test_users[1]]
+      - group_before_remove.groups[0].members == group_test_users | sort
+- name: Remove the first member only
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_users[0]] }}'
+    membership_mode: absent
+  register: group_removed_member
+- name: Read actual member removal
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_one_member
+- name: Verify subtractive membership
+  ansible.builtin.assert:
+    that:
+      - group_removed_member is changed
+      - group_one_member.groups[0].members == [group_test_users[1]]
+- name: Add the first member without replacing the second
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_users[0]] }}'
+    membership_mode: present
+  register: group_added_member
+- name: Read actual additive membership
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_both_members
+- name: Verify additive membership
+  ansible.builtin.assert:
+    that:
+      - group_added_member is changed
+      - group_both_members.groups[0].members == group_test_users | sort
+- name: Predict deleting a populated group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    state: absent
+  register: group_delete_prediction
+  check_mode: true
+- name: Independently read group after deletion prediction
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_delete_prediction
+- name: Independently read users after deletion prediction
+  proxmox_group_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_users_after_delete_prediction
+  loop: '{{ group_test_users }}'
+- name: Verify deletion prediction retains the populated group and its memberships
+  ansible.builtin.assert:
+    that:
+      - group_delete_prediction is changed
+      - group_delete_prediction.group == none
+      - group_after_delete_prediction.groups == group_both_members.groups
+      - group_users_after_delete_prediction.results[0].fixture.groups | sort == [group_test_id, group_test_other] | sort
+      - group_users_after_delete_prediction.results[1].fixture.groups | sort == [group_test_id, group_test_other] | sort
+- name: Explicitly clear all members and the comment
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: []
+    comment: ''
+  register: group_cleared
+- name: Independently read explicit clears
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_empty
+- name: Read users after clearing target membership
+  proxmox_group_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_users_after_clear
+  loop: '{{ group_test_users }}'
+- name: Verify exact clears preserve unrelated memberships
+  ansible.builtin.assert:
+    that:
+      - group_cleared is changed
+      - group_empty.groups[0].members == []
+      - group_empty.groups[0].comment == ''
+      - group_users_after_clear.results[0].fixture.groups == [group_test_other]
+      - group_users_after_clear.results[1].fixture.groups == [group_test_other]
+- name: Omit membership and comment
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+  register: group_omitted
+- name: Verify omitted values are preserved
+  ansible.builtin.assert:
+    that:
+      - group_omitted is not changed
+- name: Delete the owned group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    state: absent
+  register: group_deleted
+- name: Independently verify primary group removal
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_removed
+- name: Require actual group removal
+  ansible.builtin.assert:
+    that:
+      - group_deleted is changed
+      - group_removed.groups == []
+- name: Repeat group deletion
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    state: absent
+  register: group_absent_repeat
+- name: Verify repeated group deletion is unchanged
+  ansible.builtin.assert:
+    that:
+      - group_absent_repeat is not changed
+- name: Independently read the sibling after the full lifecycle
+  proxmox_group_fixture:
+    resource_id: '{{ group_test_sibling }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_sibling_after
+- name: Verify sibling account isolation throughout the lifecycle
+  ansible.builtin.assert:
+    that:
+      - group_sibling_after.fixture == group_sibling_before.fixture

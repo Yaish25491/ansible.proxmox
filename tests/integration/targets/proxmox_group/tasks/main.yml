@@ -1,0 +1,67 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    group_cleanup_allowed: false
+- name: Exercise group lifecycle and independent information reads
+  module_defaults:
+    group/ansible.proxmox.proxmox: &id001
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_group_fixture: *id001
+  block:
+    - name: Verify both group identifiers are unused
+      ansible.proxmox.proxmox_group_info:
+        groupid: '{{ item }}'
+      register: group_preflight
+      loop: '{{ [group_test_id, group_test_other] }}'
+    - name: Verify supporting fixture users are absent
+      proxmox_group_fixture:
+        resource_id: '{{ item }}'
+        owned_ids: '{{ group_test_owned_users }}'
+        read_only: true
+      register: group_user_preflight
+      loop: '{{ group_test_owned_users }}'
+    - name: Require unclaimed group and user identifiers
+      ansible.builtin.assert:
+        that:
+          - group_test_owned_users | unique | length == 6
+          - group_test_id != group_test_other
+          - group_preflight.results | map(attribute='groups') | flatten | length == 0
+          - group_user_preflight.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0
+    - name: Claim only the verified absent identity fixtures
+      ansible.builtin.set_fact:
+        group_cleanup_allowed: true
+    - name: Create the owned unrelated group
+      ansible.proxmox.proxmox_group:
+        groupid: '{{ group_test_other }}'
+      register: group_other_created
+    - name: Create disabled users with unrelated membership
+      proxmox_group_fixture:
+        resource_id: '{{ item }}'
+        owned_ids: '{{ group_test_owned_users }}'
+        groups: '{{ [group_test_other] }}'
+      register: group_users_created
+      loop: '{{ group_test_owned_users }}'
+    - name: Snapshot the owned sibling account before membership changes
+      proxmox_group_fixture:
+        resource_id: '{{ group_test_sibling }}'
+        owned_ids: '{{ group_test_owned_users }}'
+        read_only: true
+      register: group_sibling_before
+    - name: Exercise lifecycle predictions actual values and repeated no-ops
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise rejected requests without touching unrelated identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Clean and independently verify owned identity fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: group_cleanup_allowed | default(false)

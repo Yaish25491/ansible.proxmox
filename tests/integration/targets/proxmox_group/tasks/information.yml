@@ -1,0 +1,42 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: List group summaries normally
+  ansible.proxmox.proxmox_group_info:
+  register: group_listed
+  no_log: true
+- name: List group summaries in check mode
+  ansible.proxmox.proxmox_group_info:
+  register: group_listed_check
+  check_mode: true
+  no_log: true
+- name: Read the selected group in check mode
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_selected_check
+  check_mode: true
+- name: Verify normalized owned summaries and read-only check-mode parity
+  ansible.builtin.assert:
+    that:
+      - group_listed is not changed
+      - group_listed_check is not changed
+      - group_selected_check is not changed
+      - group_selected_check.groups == group_actual.groups
+      - group_listed.groups | selectattr('groupid', 'equalto', group_test_id) | list == group_actual.groups
+      - group_listed_check.groups | selectattr('groupid', 'equalto', group_test_id) | list == group_actual.groups
+      - >-
+        group_listed.groups | selectattr('groupid', 'equalto', group_test_other)
+        | map(attribute='members') | first | sort == group_test_owned_users | sort
+      - >-
+        group_listed_check.groups | selectattr('groupid', 'equalto', group_test_other)
+        | map(attribute='members') | first | sort == group_test_owned_users | sort
+  no_log: true
+- name: Read the group again after information calls
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_info
+- name: Verify information calls left actual group state unchanged
+  ansible.builtin.assert:
+    that:
+      - group_after_info.groups == group_actual.groups
