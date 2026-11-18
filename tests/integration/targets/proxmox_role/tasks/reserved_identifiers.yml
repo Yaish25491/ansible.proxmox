@@ -1,0 +1,31 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject reserved identifiers for present and absent requests
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_invalid_id }}'
+    state: '{{ item }}'
+  check_mode: '{{ role_error_check_mode }}'
+  loop: [present, absent]
+  register: role_reserved_requests
+  ignore_errors: true
+- name: Require each reserved lifecycle request to fail without writes
+  ansible.builtin.assert:
+    that:
+      - item is failed
+      - item is not changed
+      - "'roleid cannot be the reserved URL path segments' in item.msg"
+  loop: '{{ role_reserved_requests.results }}'
+- name: Reject selected information for a reserved identifier
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_invalid_id }}'
+  check_mode: '{{ role_error_check_mode }}'
+  register: role_reserved_info
+  ignore_errors: true
+- name: Require reserved information selection to fail without changes
+  ansible.builtin.assert:
+    that:
+      - role_reserved_info is failed
+      - role_reserved_info is not changed
+      - "'roleid cannot be the reserved URL path segments' in role_reserved_info.msg"

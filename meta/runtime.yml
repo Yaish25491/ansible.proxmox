@@ -11,19 +11,21 @@ action_groups:
     - proxmox_lxc_info
     - proxmox_lxc_powerstate
     - proxmox_lxc_powerstate_info
-    - proxmox_lxc_template
-    - proxmox_lxc_template_info
     - proxmox_lxc_snapshot
     - proxmox_lxc_snapshot_info
+    - proxmox_lxc_template
+    - proxmox_lxc_template_info
     - proxmox_node_dns
     - proxmox_node_hosts
     - proxmox_node_info
     - proxmox_node_syslog_info
     - proxmox_node_time
-    - proxmox_user
-    - proxmox_user_info
     - proxmox_pool
     - proxmox_pool_info
+    - proxmox_role
+    - proxmox_role_info
+    - proxmox_user
+    - proxmox_user_info
     - proxmox_vm
     - proxmox_vm_clone
     - proxmox_vm_info

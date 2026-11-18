@@ -1,0 +1,72 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject an unknown privilege without creating a role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Ansible.InvalidPrivilege
+  register: role_invalid
+  check_mode: '{{ role_error_check_mode }}'
+  ignore_errors: true
+- name: Verify privilege validation failure
+  ansible.builtin.assert:
+    that:
+      - role_invalid is failed
+      - role_invalid is not changed
+      - '''Unknown privileges'' in role_invalid.msg'
+- name: Reject built-in role deletion
+  ansible.proxmox.proxmox_role:
+    roleid: Administrator
+    state: absent
+  register: role_builtin
+  check_mode: '{{ role_error_check_mode }}'
+  ignore_errors: true
+- name: Verify protected built-in role
+  ansible.builtin.assert:
+    that:
+      - role_builtin is failed
+      - role_builtin is not changed
+      - '''Built-in roles cannot be deleted'' in role_builtin.msg'
+- name: Reject built-in privilege changes
+  ansible.proxmox.proxmox_role:
+    roleid: Administrator
+    privileges: []
+  check_mode: '{{ role_error_check_mode }}'
+  register: role_builtin_update
+  ignore_errors: true
+- name: Require rejected built-in privilege updates without writes
+  ansible.builtin.assert:
+    that:
+      - role_builtin_update is failed
+      - role_builtin_update is not changed
+      - "'Built-in role privileges cannot be changed' in role_builtin_update.msg"
+- name: Match the existing built-in privilege set
+  ansible.proxmox.proxmox_role:
+    roleid: Administrator
+    privileges: '{{ role_builtin_before.roles[0].privileges }}'
+  check_mode: '{{ role_error_check_mode }}'
+  register: role_builtin_matching
+- name: Require matching built-in state to be a no-op
+  ansible.builtin.assert:
+    that:
+      - role_builtin_matching is not changed
+      - role_builtin_matching.role == role_builtin_before.roles[0]
+- name: Reject creation within the reserved PVE namespace
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_reserved_prefix }}'
+  check_mode: '{{ role_error_check_mode }}'
+  register: role_reserved_prefix
+  ignore_errors: true
+- name: Require namespace rejection without writes
+  ansible.builtin.assert:
+    that:
+      - role_reserved_prefix is failed
+      - role_reserved_prefix is not changed
+      - "'New role names must not start with PVE' in role_reserved_prefix.msg"
+- name: Exercise reserved role path segments
+  ansible.builtin.include_tasks: reserved_identifiers.yml
+  loop: ['.', '..']
+  loop_control:
+    loop_var: role_invalid_id

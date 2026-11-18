@@ -202,3 +202,17 @@ list-all and selected information reads in check mode, creation/deletion
 predictions, removal of a user's last group, deletion of a populated group while
 preserving member accounts, and rejection of reserved group path segments.
 Run only with explicit authorization to create and remove these test identities.
+
+## Role identity integration tests
+
+The `proxmox_role` target tests the lifecycle module together with
+`proxmox_role_info`, using the shared private integration configuration.
+Run `ansible-test integration proxmox_role` from the collection root.
+The target creates uniquely named, ownership-checked identity fixtures and
+removes them in `always`, continuing cleanup after individual errors and
+independently verifying removal. It does not assign ACLs or alter the
+controller's authentication identity. Coverage includes omitted-privilege creation, privilege replacement,
+populated omission, explicit empty sets, list-all and selected information reads
+in check mode, reserved role identifiers, and built-in update/deletion protection
+with independent verification that built-in privileges remain unchanged.
+Run only with explicit authorization to create and remove these test identities.
