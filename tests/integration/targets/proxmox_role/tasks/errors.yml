@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject an unknown privilege in check mode
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Ansible.InvalidPrivilege
+  register: role_invalid
+  check_mode: true
+  ignore_errors: true
+- name: Verify privilege validation failure
+  ansible.builtin.assert:
+    that:
+      - role_invalid is failed
+      - role_invalid is not changed
+      - '''Unknown privileges'' in role_invalid.msg'
+- name: Reject built-in role deletion in check mode
+  ansible.proxmox.proxmox_role:
+    roleid: Administrator
+    state: absent
+  register: role_builtin
+  check_mode: true
+  ignore_errors: true
+- name: Verify protected built-in role
+  ansible.builtin.assert:
+    that:
+      - role_builtin is failed
+      - role_builtin is not changed
+      - '''Built-in roles cannot be deleted'' in role_builtin.msg'
+- name: Independently verify the built-in role still exists
+  ansible.proxmox.proxmox_role_info:
+    roleid: Administrator
+  register: role_builtin_actual
+- name: Require the untouched built-in role
+  ansible.builtin.assert:
+    that:
+      - role_builtin_actual is not changed
+      - role_builtin_actual.roles[0].special

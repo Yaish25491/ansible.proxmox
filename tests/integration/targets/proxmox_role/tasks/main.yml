@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    role_cleanup_allowed: false
+- name: Exercise role lifecycle and independent information reads
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+  block:
+    - name: Verify the role identifier is unused
+      ansible.proxmox.proxmox_role_info:
+        roleid: '{{ role_test_id }}'
+      register: role_preflight
+    - name: Require an absent custom role before claiming it
+      ansible.builtin.assert:
+        that:
+          - role_preflight is not changed
+          - role_preflight.roles == []
+    - name: Claim only the verified absent identity fixtures
+      ansible.builtin.set_fact:
+        role_cleanup_allowed: true
+    - name: Exercise lifecycle predictions actual values and repeated no-ops
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise rejected requests without touching unrelated identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Clean and independently verify owned identity fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: role_cleanup_allowed | default(false)

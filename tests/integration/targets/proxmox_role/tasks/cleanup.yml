@@ -1,0 +1,18 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove only the owned custom role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    state: absent
+  register: role_cleanup_delete
+  ignore_errors: true
+- name: Independently verify custom role cleanup
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_cleanup_actual
+- name: Expose any remaining custom role
+  ansible.builtin.assert:
+    that:
+      - role_cleanup_actual.roles == []
