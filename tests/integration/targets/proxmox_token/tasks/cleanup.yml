@@ -1,0 +1,34 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove the owned child token first
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_cleanup_delete
+  ignore_errors: true
+- name: Continue removing only the owned user
+  proxmox_token_fixture:
+    resource_id: '{{ token_test_user }}'
+    owned_ids: '{{ [token_test_user] }}'
+    state: absent
+  register: token_cleanup_owner
+  ignore_errors: true
+- name: Independently verify token removal
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_cleanup_actual
+- name: Independently verify fixture owner removal
+  proxmox_token_fixture:
+    resource_id: '{{ token_test_user }}'
+    owned_ids: '{{ [token_test_user] }}'
+    read_only: true
+  register: token_cleanup_user_actual
+- name: Expose any remaining owned token or user
+  ansible.builtin.assert:
+    that:
+      - token_cleanup_actual.tokens == []
+      - token_cleanup_user_actual.fixture == none

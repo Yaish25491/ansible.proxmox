@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject creation for a missing owner
+  ansible.proxmox.proxmox_token:
+    userid: ansible-token-missing-{{ integration_resource_ids | join('') }}@pve
+    tokenid: '{{ token_test_id }}'
+  register: token_missing_owner
+  check_mode: true
+  ignore_errors: true
+- name: Verify missing owner failure without writes
+  ansible.builtin.assert:
+    that:
+      - token_missing_owner is failed
+      - token_missing_owner is not changed
+      - '''does not exist'' in token_missing_owner.msg'
+- name: Reject a comment the baseline API cannot store
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    comment: '0'
+  register: token_invalid_comment
+  check_mode: true
+  ignore_errors: true
+- name: Verify rejected token comment without writes
+  ansible.builtin.assert:
+    that:
+      - token_invalid_comment is failed
+      - token_invalid_comment is not changed
+      - '''cannot persist comment=0'' in token_invalid_comment.msg'
+- name: Verify rejected requests created no token
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_after_errors
+- name: Require no token after errors
+  ansible.builtin.assert:
+    that:
+      - token_after_errors.tokens == []

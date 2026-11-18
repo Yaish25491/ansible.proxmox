@@ -1,0 +1,55 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    token_cleanup_allowed: false
+- name: Exercise token lifecycle and independent information reads
+  module_defaults:
+    group/ansible.proxmox.proxmox: &id001
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_token_fixture: *id001
+  block:
+    - name: Verify the token owner identifier is unused
+      proxmox_token_fixture:
+        resource_id: '{{ token_test_user }}'
+        owned_ids: '{{ [token_test_user] }}'
+        read_only: true
+      register: token_owner_preflight
+    - name: Require an absent owner before claiming it
+      ansible.builtin.assert:
+        that:
+          - token_owner_preflight.fixture == none
+    - name: Verify the token identifier is absent
+      ansible.proxmox.proxmox_token_info:
+        userid: '{{ token_test_user }}'
+        tokenid: '{{ token_test_id }}'
+      register: token_preflight
+    - name: Require no token before claiming it
+      ansible.builtin.assert:
+        that:
+          - token_preflight.tokens == []
+    - name: Claim only the verified absent identity fixtures
+      ansible.builtin.set_fact:
+        token_cleanup_allowed: true
+    - name: Create only the owned disabled passwordless PVE user
+      proxmox_token_fixture:
+        resource_id: '{{ token_test_user }}'
+        owned_ids: '{{ [token_test_user] }}'
+      register: token_owner_created
+    - name: Exercise lifecycle predictions actual values and repeated no-ops
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise rejected requests without touching unrelated identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Clean and independently verify owned identity fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: token_cleanup_allowed | default(false)
