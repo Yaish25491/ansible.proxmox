@@ -1,0 +1,12 @@
+---
+- name: Remove the LXC power-state test container
+  ansible.proxmox.proxmox_lxc: # noqa: args[module]
+    node: "{{ proxmox_node }}"
+    vmid: "{{ lxc_powerstate_vmid }}"
+    power_cycle: 'off'
+    state: absent
+  register: lxc_powerstate_cleanup_remove
+  until: lxc_powerstate_cleanup_remove is not failed
+  retries: 30
+  delay: 2
+  ignore_errors: true

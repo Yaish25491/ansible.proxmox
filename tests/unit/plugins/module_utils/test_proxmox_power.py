@@ -12,7 +12,11 @@ from unittest.mock import Mock
 import pytest
 
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import ProxmoxClient
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPower
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import (
+    ProxmoxPower,
+    ProxmoxPowerstateActionModule,
+    ProxmoxPowerstateInfoModule,
+)
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_task import ProxmoxTask
 
 
@@ -33,6 +37,21 @@ def make_power(**params):
     client = ProxmoxClient(module)
     client._api = api
     return ProxmoxPower(module, client=client), api
+
+
+def test_lxc_power_waits_and_verifies_the_lxc_endpoint():
+    """Use shared task waiting and state verification for LXC guests."""
+    existing, api = make_power()
+    power = ProxmoxPower(existing.module, client=existing.client, guest_type="lxc")
+    container = api.nodes.return_value.lxc.return_value
+    container.status.start.post.return_value = "UPID:pve01:start"
+    container.status.current.get.return_value = {"status": "running"}
+    api.nodes.return_value.tasks.return_value.status.get.return_value = {"status": "stopped", "exitstatus": "OK"}
+
+    assert power.set_state("start") == ("UPID:pve01:start", "running")
+    container.status.start.post.assert_called_once_with()
+    api.nodes.return_value.tasks.assert_called_once_with("UPID:pve01:start")
+    api.nodes.return_value.qemu.assert_not_called()
 
 
 def test_lxc_power_waits_and_verifies_the_lxc_endpoint():
@@ -448,3 +467,138 @@ def test_set_state_power_actions(action, endpoint, options, status, monkeypatch)
     assert power.set_state(action) == (upid, ProxmoxPower.POWER_STATES[action])
     getattr(qemu.status, endpoint).post.assert_called_once_with(**options)
     wait.assert_called_once_with(upid, include_log_on_failure=True)
+
+
+@pytest.mark.parametrize("action,expected_status", [
+    ("start", "running"),
+    ("stop", "stopped"),
+    ("shutdown", "stopped"),
+    ("reboot", "running"),
+])
+def test_lxc_set_state_supports_lxc_power_actions(action, expected_status, monkeypatch):
+    """Use the LXC endpoint and verify each supported LXC action.
+
+    Args:
+        action: LXC power action to execute.
+        expected_status: Status expected after the task completes.
+        monkeypatch: Pytest fixture for replacing task waiting.
+    """
+    qemu_power, api = make_power()
+    power = ProxmoxPower(qemu_power.module, client=qemu_power.client, guest_type="lxc")
+    container = api.nodes.return_value.lxc.return_value
+    upid = "UPID:pve01:{0}".format(action)
+    getattr(container.status, action).post.return_value = upid
+    container.status.current.get.return_value = {"status": expected_status}
+    wait = Mock()
+    monkeypatch.setattr(ProxmoxTask, "wait_for_task", wait)
+
+    assert power.set_state(action) == (upid, expected_status)
+
+    getattr(container.status, action).post.assert_called_once_with()
+    wait.assert_called_once_with(upid, include_log_on_failure=True)
+    api.nodes.return_value.qemu.assert_not_called()
+
+
+def test_lxc_set_state_rejects_qemu_only_actions():
+    """Reject QEMU-only operations before accessing a container endpoint."""
+    qemu_power, api = make_power()
+    power = ProxmoxPower(qemu_power.module, client=qemu_power.client, guest_type="lxc")
+
+    with pytest.raises(RuntimeError, match="module failed"):
+        power.set_state("pause")
+
+    assert "Unsupported LXC container power operation" in power.module.fail_json.call_args.kwargs["msg"]
+    api.nodes.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "check_mode,current_status,expected_changed,executes_action,expected_result",
+    [
+        (False, {"status": "running", "qmpstatus": "running"}, False, False, "running"),
+        (True, {"status": "stopped"}, True, False, "stopped"),
+        (False, {"status": "stopped"}, True, True, "running"),
+    ],
+)
+def test_shared_powerstate_action_lifecycle(
+    check_mode, current_status, expected_changed, executes_action, expected_result, monkeypatch,
+):
+    """Cover shared no-op, check-mode, and real action lifecycles.
+
+    Args:
+        check_mode: Whether the lifecycle should predict without writing.
+        current_status: Initial QEMU status response.
+        expected_changed: Expected changed flag from the lifecycle.
+        executes_action: Whether the API power endpoint should be called.
+        expected_result: Expected powerstate in the module result.
+        monkeypatch: Pytest fixture for replacing task waiting.
+    """
+    module = SimpleNamespace(
+        params={"node": "pve01", "vmid": 100, "task_timeout": None, "powerstate": "start"},
+        check_mode=check_mode,
+        exit_json=Mock(side_effect=SystemExit),
+        fail_json=Mock(side_effect=RuntimeError("module failed")),
+    )
+    api = Mock()
+    qemu = api.nodes.return_value.qemu.return_value
+    statuses = [current_status]
+    if executes_action:
+        statuses.append({"status": "running", "qmpstatus": "running"})
+    qemu.status.current.get.side_effect = statuses
+    upid = "UPID:pve01:start"
+    qemu.status.start.post.return_value = upid
+    wait = Mock()
+    monkeypatch.setattr(ProxmoxTask, "wait_for_task", wait)
+    handler = ProxmoxPowerstateActionModule(module, client=SimpleNamespace(api=api, mark_changed=Mock()))
+
+    with pytest.raises(SystemExit):
+        handler.execute_action_module()
+
+    result = module.exit_json.call_args.kwargs
+    assert result["changed"] is expected_changed
+    assert result["powerstate"] == expected_result
+    if executes_action:
+        assert result["task_upid"] == upid
+        qemu.status.start.post.assert_called_once_with()
+        wait.assert_called_once_with(upid, include_log_on_failure=True)
+    else:
+        assert "task_upid" not in result
+        qemu.status.start.post.assert_not_called()
+        wait.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [({"status": "running", "qmpstatus": "running"}, "running"), ({"status": "stopped"}, "stopped")],
+)
+def test_shared_powerstate_info_lifecycle(status, expected):
+    """Return normalized power information through the shared read-only wrapper.
+
+    Args:
+        status: Current QEMU status response.
+        expected: Expected normalized power state.
+    """
+    module = SimpleNamespace(
+        params={"node": "pve01", "vmid": 100},
+        check_mode=True,
+        exit_json=Mock(side_effect=SystemExit),
+        fail_json=Mock(side_effect=RuntimeError("module failed")),
+    )
+    api = Mock()
+    api.nodes.return_value.qemu.return_value.status.current.get.return_value = status
+    handler = ProxmoxPowerstateInfoModule(module, client=SimpleNamespace(api=api))
+
+    with pytest.raises(SystemExit):
+        handler.execute_info_module()
+
+    module.exit_json.assert_called_once_with(changed=False, powerstate=expected)
+
+
+def test_power_rejects_unknown_guest_type():
+    """Reject unsupported guest families during power helper initialization."""
+    power, api = make_power()
+
+    with pytest.raises(RuntimeError, match="module failed"):
+        ProxmoxPower(power.module, client=power.client, guest_type="invalid")
+
+    assert power.module.fail_json.call_args.kwargs["msg"] == "guest_type must be qemu or lxc."
+    api.nodes.assert_not_called()

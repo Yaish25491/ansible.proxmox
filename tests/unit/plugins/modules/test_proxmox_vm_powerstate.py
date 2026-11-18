@@ -6,12 +6,19 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
+import runpy
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from ansible.module_utils import basic
 from ansible_collections.ansible.proxmox.plugins.module_utils import proxmox_base
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import (
+    ProxmoxPowerstateActionModule,
+    ProxmoxPowerstateInfoModule,
+)
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_task import ProxmoxTask
 from ansible_collections.ansible.proxmox.plugins.modules import proxmox_vm_powerstate, proxmox_vm_powerstate_info
 
@@ -81,3 +88,44 @@ def test_module_entrypoints(entrypoint, check_mode, status, expected, monkeypatc
         wait.assert_not_called()
         qemu.status.start.post.assert_not_called()
         qemu.status.resume.post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "entrypoint,lifecycle,module_params,method_name",
+    [
+        (
+            proxmox_vm_powerstate,
+            ProxmoxPowerstateActionModule,
+            {"vmid": 100, "powerstate": "start", "task_timeout": None},
+            "execute_action_module",
+        ),
+        (
+            proxmox_vm_powerstate_info,
+            ProxmoxPowerstateInfoModule,
+            {"vmid": 100},
+            "execute_info_module",
+        ),
+    ],
+)
+def test_vm_module_script_entrypoint(entrypoint, lifecycle, module_params, method_name, monkeypatch):
+    """Cover the VM module launch guard while isolating lifecycle execution.
+
+    Args:
+        entrypoint: VM action or information module under test.
+        lifecycle: Shared handler class selected by the module.
+        module_params: Parameters returned by the fake AnsibleModule.
+        method_name: Lifecycle method called by main.
+        monkeypatch: Pytest fixture for replacing module dependencies.
+    """
+    module = SimpleNamespace(params=module_params, check_mode=False)
+    constructor = Mock(return_value=module)
+    execution = Mock()
+    monkeypatch.setattr(basic, "AnsibleModule", constructor)
+    monkeypatch.setattr(lifecycle, method_name, execution)
+    monkeypatch.setattr(proxmox_base, "ProxmoxClient", Mock(return_value=SimpleNamespace(api=Mock())))
+
+    monkeypatch.delitem(sys.modules, entrypoint.__name__)
+    runpy.run_module(entrypoint.__name__, run_name="__main__", alter_sys=True)
+
+    constructor.assert_called_once()
+    execution.assert_called_once()

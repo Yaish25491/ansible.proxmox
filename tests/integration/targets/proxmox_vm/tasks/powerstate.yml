@@ -85,11 +85,16 @@
 
 - name: Change full VM name while running using hotplug  # noqa: args[module]
   ansible.proxmox.proxmox_vm: &vm_hotplug_args
+    api_timeout: "{{ proxmox_api_timeout | default(30) }}"
     node: "{{ proxmox_node }}"
+    task_timeout: 900
     vmid: "{{ vmid_full }}"
     name: hotplugged-vm
     power_cycle: hotplug
   register: vm_hotplug
+  until: vm_hotplug is not failed
+  retries: 5
+  delay: 5
 
 - name: Read power state after hotplug update  # noqa: args[module]
   ansible.proxmox.proxmox_vm_powerstate_info:

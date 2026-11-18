@@ -1,0 +1,86 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Select a random LXC identifier for power-state tests
+  ansible.builtin.set_fact:
+    lxc_powerstate_vmid: "{{ integration_resource_ids[0] | int }}"
+
+- name: Generate a temporary LXC root password
+  ansible.builtin.set_fact:
+    lxc_powerstate_root_password: "{{ lookup('password', '/dev/null length=32') }}"
+  no_log: true
+
+- name: Exercise LXC power-state modules independently
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Verify the random LXC identifier is unused
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_powerstate_vmid }}"
+      register: lxc_powerstate_existing_lxc
+
+    - name: Verify the random identifier is unused by QEMU
+      ansible.proxmox.proxmox_vm_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_powerstate_vmid }}"
+      register: lxc_powerstate_existing_vm
+
+    - name: Refuse to modify an existing guest
+      ansible.builtin.assert:
+        that:
+          - lxc_powerstate_existing_lxc.lxcs | length == 0
+          - lxc_powerstate_existing_vm.vms | length == 0
+        fail_msg: The random LXC power-state VMID is already in use; rerun to select another identifier.
+
+    - name: Create the LXC power-state test container
+      ansible.proxmox.proxmox_lxc: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_powerstate_vmid }}"
+        ostemplate: "{{ proxmox_lxc_template | default('fedora-44-default_20260713_amd64.tar.xz') }}"
+        hostname: "ansible-powerstate-{{ lxc_powerstate_vmid }}"
+        password: "{{ lxc_powerstate_root_password }}"
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 1
+        memory: 512
+        ostype: fedora
+        power_cycle: 'off'
+        state: present
+      register: lxc_powerstate_create
+
+    - name: Read the initial LXC power state
+      ansible.proxmox.proxmox_lxc_powerstate_info: # noqa: args[module]
+        vmid: "{{ lxc_powerstate_vmid }}"
+      register: lxc_powerstate_initial
+
+    - name: Assert the new container is stopped
+      ansible.builtin.assert:
+        that:
+          - lxc_powerstate_create is changed
+          - lxc_powerstate_initial is not changed
+          - lxc_powerstate_initial.powerstate == 'stopped'
+
+    - name: Exercise each LXC power action in check mode, normally, and repeatedly
+      ansible.builtin.include_tasks: powerstate_action.yml
+      loop:
+        - {action: start, before: stopped, expected: running}
+        - {action: shutdown, before: running, expected: stopped}
+        - {action: stop, before: running, expected: stopped}
+        - {action: reboot, before: running, expected: running, repeat_changed: true}
+      loop_control:
+        loop_var: lxc_powerstate_case
+        label: "{{ lxc_powerstate_case.action }}"
+
+  always:
+    - name: Clean up after testing
+      ansible.builtin.include_tasks: cleanup.yml

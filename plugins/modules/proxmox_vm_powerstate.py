@@ -91,58 +91,16 @@ from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import (
     proxmox_required_together,
     proxmox_task_argument_spec,
 )
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_action import ProxmoxActionModule
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPower
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import (
+    ProxmoxPower,
+    ProxmoxPowerstateActionModule,
+)
 
 
-class ProxmoxVmPowerstateModule(ProxmoxPower, ProxmoxActionModule):
-    """Run VM power operations through the shared action lifecycle."""
+class ProxmoxVmPowerstateModule(ProxmoxPowerstateActionModule):
+    """Run QEMU VM power operations through the shared lifecycle."""
 
-    result_key = "powerstate"
-
-    def is_action_needed(self):
-        """Read the current state and decide whether the action is necessary.
-
-        Returns:
-            Whether the requested power action must execute.
-        """
-        self._current_powerstate = self.get_powerstate()
-        return self.is_powerstate_action_needed(self.module.params["powerstate"], self._current_powerstate)
-
-    def perform_action(self):
-        """Perform the power action and retain its completed task identifier.
-
-        Returns:
-            The verified final VM power state.
-        """
-        self._task_upid, powerstate = self.perform_powerstate_action(
-            self.module.params["powerstate"], self._current_powerstate,
-        )
-        return powerstate
-
-    def get_action_result(self):
-        """Return the observed state without modifying the VM.
-
-        Returns:
-            The current power state for an idempotent no-op or check-mode run.
-        """
-        return self._current_powerstate
-
-    def prepare_result(self, changed, resource=None, **values):
-        """Include a completed power-task identifier in the lifecycle result.
-
-        Args:
-            changed: Whether the action changed or would change the VM.
-            resource: Observed VM power state.
-            **values: Additional top-level result fields.
-
-        Returns:
-            A result mapping with changed, powerstate, and an optional task_upid.
-        """
-        result = super().prepare_result(changed, resource, **values)
-        if getattr(self, "_task_upid", None) is not None:
-            result["task_upid"] = self._task_upid
-        return result
+    guest_type = "qemu"
 
 
 def main():

@@ -1,11 +1,16 @@
 ---
 - name: Remove integration test VMs
   ansible.proxmox.proxmox_vm:
+    api_timeout: "{{ proxmox_api_timeout | default(30) }}"
     node: "{{ proxmox_node }}"
+    task_timeout: 900
     vmid: "{{ item }}"
     state: absent
     power_cycle: 'off'
+  register: remove_vm_result
   loop:
     - "{{ vmid_full }}"
     - "{{ vmid_defaults }}"
-  failed_when: false
+  until: remove_vm_result is not failed
+  retries: 5
+  delay: 5

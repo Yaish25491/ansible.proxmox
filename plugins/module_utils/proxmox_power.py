@@ -6,7 +6,9 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
+from .proxmox_action import ProxmoxActionModule
 from .proxmox_base import ProxmoxBase
+from .proxmox_info import ProxmoxInfoModule
 from .proxmox_task import ProxmoxTask
 
 
@@ -285,3 +287,50 @@ class ProxmoxPower(ProxmoxBase):
         if status != expected:
             self.client.fail_request("{0} {1} did not reach the {2} state.".format(self.guest_label, vmid, expected))
         return result, expected
+
+
+class ProxmoxPowerstateActionModule(ProxmoxPower, ProxmoxActionModule):
+    """Shared idempotent action lifecycle for guest power-state modules."""
+
+    result_key = "powerstate"
+    guest_type = "qemu"
+
+    def __init__(self, module, client=None):
+        super().__init__(module, client=client, guest_type=self.guest_type)
+
+    def is_action_needed(self):
+        """Read the current state and decide whether the action is necessary."""
+        self._current_powerstate = self.get_powerstate()
+        return self.is_powerstate_action_needed(self.module.params["powerstate"], self._current_powerstate)
+
+    def perform_action(self):
+        """Perform the power action and retain its completed task identifier."""
+        self._task_upid, powerstate = self.perform_powerstate_action(
+            self.module.params["powerstate"], self._current_powerstate,
+        )
+        return powerstate
+
+    def get_action_result(self):
+        """Return the observed state for an idempotent no-op or check-mode run."""
+        return self._current_powerstate
+
+    def prepare_result(self, changed, resource=None, **values):
+        """Include a completed power-task identifier when one was returned."""
+        result = super().prepare_result(changed, resource, **values)
+        if getattr(self, "_task_upid", None) is not None:
+            result["task_upid"] = self._task_upid
+        return result
+
+
+class ProxmoxPowerstateInfoModule(ProxmoxPower, ProxmoxInfoModule):
+    """Shared read-only lifecycle for guest power-state information modules."""
+
+    result_key = "powerstate"
+    guest_type = "qemu"
+
+    def __init__(self, module, client=None):
+        super().__init__(module, client=client, guest_type=self.guest_type)
+
+    def get_info(self):
+        """Retrieve the normalized current power state."""
+        return self.get_powerstate()

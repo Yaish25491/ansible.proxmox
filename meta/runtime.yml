@@ -6,6 +6,8 @@ action_groups:
     - proxmox_api_connection_info
     - proxmox_lxc
     - proxmox_lxc_info
+    - proxmox_lxc_powerstate
+    - proxmox_lxc_powerstate_info
     - proxmox_node_dns
     - proxmox_node_hosts
     - proxmox_node_info

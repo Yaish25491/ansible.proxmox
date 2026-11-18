@@ -65,22 +65,13 @@ from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import (
     proxmox_mutually_exclusive,
     proxmox_required_together,
 )
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_info import ProxmoxInfoModule
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPower
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPowerstateInfoModule
 
 
-class ProxmoxVmPowerstateInfoModule(ProxmoxPower, ProxmoxInfoModule):
-    """Retrieve VM power state through the shared information lifecycle."""
+class ProxmoxVmPowerstateInfoModule(ProxmoxPowerstateInfoModule):
+    """Retrieve QEMU VM power state through the shared info lifecycle."""
 
-    result_key = "powerstate"
-
-    def get_info(self):
-        """Retrieve the VM's normalized current power state.
-
-        Returns:
-            One of stopped, running, paused, or suspended.
-        """
-        return self.get_powerstate()
+    guest_type = "qemu"
 
 
 def main():

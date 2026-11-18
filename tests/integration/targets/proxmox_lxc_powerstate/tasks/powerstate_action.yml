@@ -1,0 +1,79 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: "Prepare the LXC container for the {{ lxc_powerstate_case.action }}"
+  ansible.proxmox.proxmox_lxc_powerstate: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+    powerstate: "{{ 'start' if lxc_powerstate_case.before == 'running' else 'stop' }}"
+  register: lxc_powerstate_prepare
+
+- name: Read the prepared LXC power state
+  ansible.proxmox.proxmox_lxc_powerstate_info: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+  register: lxc_powerstate_before
+
+- name: Assert preparation action output and power state
+  ansible.builtin.assert:
+    that:
+      - lxc_powerstate_prepare.powerstate == lxc_powerstate_case.before
+      - lxc_powerstate_before is not changed
+      - lxc_powerstate_before.powerstate == lxc_powerstate_case.before
+
+- name: "Predict the action in check mode for {{ lxc_powerstate_case.action }}"
+  ansible.proxmox.proxmox_lxc_powerstate: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+    powerstate: "{{ lxc_powerstate_case.action }}"
+  check_mode: true
+  register: lxc_powerstate_check
+
+- name: Read the LXC power state after check mode
+  ansible.proxmox.proxmox_lxc_powerstate_info: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+  register: lxc_powerstate_after_check
+
+- name: Assert check-mode prediction and non-mutation
+  ansible.builtin.assert:
+    that:
+      - lxc_powerstate_check is changed
+      - lxc_powerstate_check.powerstate == lxc_powerstate_case.before
+      - lxc_powerstate_after_check is not changed
+      - lxc_powerstate_after_check.powerstate == lxc_powerstate_case.before
+
+- name: "Perform the power action {{ lxc_powerstate_case.action }}"
+  ansible.proxmox.proxmox_lxc_powerstate: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+    powerstate: "{{ lxc_powerstate_case.action }}"
+  register: lxc_powerstate_action
+
+- name: Read the LXC power state after the action
+  ansible.proxmox.proxmox_lxc_powerstate_info: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+  register: lxc_powerstate_after_action
+
+- name: Assert action output and resulting power state
+  ansible.builtin.assert:
+    that:
+      - lxc_powerstate_action is changed
+      - lxc_powerstate_action.powerstate == lxc_powerstate_case.expected
+      - lxc_powerstate_after_action is not changed
+      - lxc_powerstate_after_action.powerstate == lxc_powerstate_case.expected
+
+- name: "Repeat the power action {{ lxc_powerstate_case.action }}"
+  ansible.proxmox.proxmox_lxc_powerstate: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+    powerstate: "{{ lxc_powerstate_case.action }}"
+  register: lxc_powerstate_repeat
+
+- name: Read the LXC power state after the repeated action
+  ansible.proxmox.proxmox_lxc_powerstate_info: # noqa: args[module]
+    vmid: "{{ lxc_powerstate_vmid }}"
+  register: lxc_powerstate_after_repeat
+
+- name: Assert repeated action behavior and power state
+  ansible.builtin.assert:
+    that:
+      - (lxc_powerstate_repeat is changed) == (lxc_powerstate_case.repeat_changed | default(false))
+      - lxc_powerstate_repeat.powerstate == lxc_powerstate_case.expected
+      - lxc_powerstate_after_repeat is not changed
+      - lxc_powerstate_after_repeat.powerstate == lxc_powerstate_case.expected
