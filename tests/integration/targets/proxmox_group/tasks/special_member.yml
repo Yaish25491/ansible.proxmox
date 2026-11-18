@@ -1,0 +1,66 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Add the literal special user without replacing current members
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_special_user] }}'
+    membership_mode: present
+  register: group_special_added
+- name: Independently read membership with the special user
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_special_actual
+- name: Independently read the literal special user
+  proxmox_group_fixture:
+    resource_id: '{{ group_special_user }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_special_user_actual
+- name: Verify the literal identifier and unrelated groups
+  ansible.builtin.assert:
+    that:
+      - group_special_added is changed
+      - group_special_actual.groups[0].members == (group_test_users + [group_special_user]) | sort
+      - group_special_user_actual.fixture.userid == group_special_user
+      - group_special_user_actual.fixture.groups | sort == [group_test_id, group_test_other] | sort
+- name: Repeat the special-user membership addition
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_special_user] }}'
+    membership_mode: present
+  register: group_special_repeat
+- name: Require special-user membership idempotency
+  ansible.builtin.assert:
+    that:
+      - group_special_repeat is not changed
+- name: Remove only the literal special user from this group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_special_user] }}'
+    membership_mode: absent
+  register: group_special_removed
+- name: Independently read membership after special-user removal
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_special_after_remove
+- name: Independently read the special user's remaining groups
+  proxmox_group_fixture:
+    resource_id: '{{ group_special_user }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_special_user_after_remove
+- name: Independently read the owned sibling account
+  proxmox_group_fixture:
+    resource_id: '{{ group_test_sibling }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_special_sibling
+- name: Verify special-user removal preserved other identities and groups
+  ansible.builtin.assert:
+    that:
+      - group_special_removed is changed
+      - group_special_after_remove.groups[0].members == group_test_users | sort
+      - group_special_user_after_remove.fixture.groups == [group_test_other]
+      - group_special_sibling.fixture == group_sibling_before.fixture

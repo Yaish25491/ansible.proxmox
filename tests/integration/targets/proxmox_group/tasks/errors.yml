@@ -1,0 +1,48 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject missing member before creating a group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members:
+      - ansible-group-missing-{{ integration_resource_ids | join('') }}@pve
+  register: group_invalid
+  check_mode: true
+  ignore_errors: true
+- name: Verify membership dependency validation
+  ansible.builtin.assert:
+    that:
+      - group_invalid is failed
+      - group_invalid is not changed
+      - '''Users do not exist'' in group_invalid.msg'
+- name: Verify rejected request did not create the group
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_error
+- name: Require no group after failure
+  ansible.builtin.assert:
+    that:
+      - group_after_error.groups == []
+- name: Reject reserved group path segments before creation
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ item }}'
+  register: group_reserved_create
+  loop: ['.', '..']
+  ignore_errors: true
+- name: Reject reserved group path segments in information check mode
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ item }}'
+  register: group_reserved_info
+  loop: ['.', '..']
+  check_mode: true
+  ignore_errors: true
+- name: Verify reserved identifiers fail without predicting or completing writes
+  ansible.builtin.assert:
+    that:
+      - item is failed
+      - item is not changed
+      - "'groupid cannot be the reserved URL path segments' in item.msg"
+  loop: '{{ group_reserved_create.results + group_reserved_info.results }}'
+  loop_control:
+    label: '{{ item.item }}'

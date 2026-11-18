@@ -1,0 +1,74 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Give the isolated owned user its only group membership
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_sole_user] }}'
+    membership_mode: present
+  register: group_sole_added
+- name: Independently read the sole membership
+  proxmox_group_fixture:
+    resource_id: '{{ group_test_sole_user }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_sole_before
+- name: Require exactly one group on the isolated user
+  ansible.builtin.assert:
+    that:
+      - group_sole_added is changed
+      - group_sole_before.fixture.groups == [group_test_id]
+- name: Predict removing the user's last group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_sole_user] }}'
+    membership_mode: absent
+  check_mode: true
+  register: group_sole_prediction
+- name: Independently read the user after the removal prediction
+  proxmox_group_fixture:
+    resource_id: '{{ group_test_sole_user }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_sole_after_prediction
+- name: Require a prediction without changing the last membership
+  ansible.builtin.assert:
+    that:
+      - group_sole_prediction is changed
+      - group_sole_prediction.group.members == group_test_users | sort
+      - group_sole_after_prediction.fixture == group_sole_before.fixture
+- name: Remove the isolated user's last membership
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_sole_user] }}'
+    membership_mode: absent
+  register: group_sole_removed
+- name: Independently read the user without any groups
+  proxmox_group_fixture:
+    resource_id: '{{ group_test_sole_user }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_sole_after
+- name: Independently read the remaining group members
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ group_test_id }}'
+  register: group_after_sole_removal
+- name: Require empty user membership while retaining the other users
+  ansible.builtin.assert:
+    that:
+      - group_sole_removed is changed
+      - group_sole_after.fixture.userid == group_test_sole_user
+      - group_sole_after.fixture.groups == []
+      - not group_sole_after.fixture.enable | bool
+      - group_after_sole_removal.groups[0].members == group_test_users | sort
+- name: Repeat removal of the isolated user's last membership
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    members: '{{ [group_test_sole_user] }}'
+    membership_mode: absent
+  register: group_sole_repeat
+- name: Require repeated last-membership removal to be unchanged
+  ansible.builtin.assert:
+    that:
+      - group_sole_repeat is not changed
