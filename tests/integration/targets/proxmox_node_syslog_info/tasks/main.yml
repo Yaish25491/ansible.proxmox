@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise read-only node syslog queries
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Independently verify the configured node before log queries
+      ansible.proxmox.proxmox_node_info:
+        node: "{{ proxmox_node }}"
+        gather_subset: []
+      register: syslog_node
+
+    - name: Require an existing node and a positive small page size
+      ansible.builtin.assert:
+        that:
+          - syslog_node is not changed
+          - syslog_node.nodes | length == 1
+          - syslog_node.nodes[0].node == proxmox_node
+          - syslog_test_limit | int > 0
+          - syslog_test_limit | int <= 50
+
+    - name: Exercise normal check-mode and paginated reads
+      ansible.builtin.include_tasks: reads.yml
+
+    - name: Exercise service and date-time filtering
+      ansible.builtin.include_tasks: filters.yml
+
+    - name: Exercise validation and missing-node behavior
+      ansible.builtin.include_tasks: errors.yml

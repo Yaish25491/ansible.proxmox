@@ -1,0 +1,56 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Verify the randomized missing-node identifier independently
+  ansible.proxmox.proxmox_node_info:
+    node: "ansible-syslog-missing-{{ integration_resource_ids | join('-') }}"
+    gather_subset: []
+  register: syslog_missing_node
+
+- name: Require an absent node before testing no-result behavior
+  ansible.builtin.assert:
+    that:
+      - syslog_missing_node is not changed
+      - syslog_missing_node.nodes == []
+
+- name: Query syslog from the verified missing node in check mode
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "ansible-syslog-missing-{{ integration_resource_ids | join('-') }}"
+  check_mode: true
+  register: syslog_missing
+
+- name: Verify missing nodes return no records without changes
+  ansible.builtin.assert:
+    that:
+      - syslog_missing is not changed
+      - syslog_missing.syslog == []
+
+- name: Reject negative pagination without changes
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    start: -1
+  register: syslog_negative
+  ignore_errors: true
+
+- name: Verify the pagination validation error
+  ansible.builtin.assert:
+    that:
+      - syslog_negative is failed
+      - syslog_negative is not changed
+      - "'start must be zero or greater' in syslog_negative.msg"
+
+- name: Reject malformed date-time bounds in check mode
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    since: yesterday
+  check_mode: true
+  register: syslog_invalid_date
+  ignore_errors: true
+
+- name: Verify date-time validation without an API write
+  ansible.builtin.assert:
+    that:
+      - syslog_invalid_date is failed
+      - syslog_invalid_date is not changed
+      - "'since must use' in syslog_invalid_date.msg"

@@ -1,0 +1,87 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read a default page without filters
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+  register: syslog_default
+  no_log: true
+
+- name: Verify default pagination and the information contract
+  ansible.builtin.assert:
+    that:
+      - syslog_default is not changed
+      - syslog_default.syslog is sequence
+      - syslog_default.syslog | length <= 50
+
+- name: Verify returned line types without printing journal contents
+  ansible.builtin.assert:
+    that:
+      - item.n is number
+      - item.n | int >= 1
+      - item.t is string
+  loop: "{{ syslog_default.syslog }}"
+  no_log: true
+
+- name: Read a small page in check mode
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    start: 0
+    limit: "{{ syslog_test_limit }}"
+  check_mode: true
+  register: syslog_check
+  no_log: true
+
+- name: Verify check mode returns an unchanged bounded page
+  ansible.builtin.assert:
+    that:
+      - syslog_check is not changed
+      - syslog_check.syslog is sequence
+      - syslog_check.syslog | length <= syslog_test_limit | int
+
+- name: Read a subsequent page with a nonzero offset
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    start: 1
+    limit: "{{ syslog_test_limit }}"
+  register: syslog_offset
+  no_log: true
+
+- name: Verify pagination retains server line numbers
+  ansible.builtin.assert:
+    that:
+      - syslog_offset is not changed
+      - syslog_offset.syslog | length <= syslog_test_limit | int
+      - >-
+        syslog_offset.syslog | length == 0 or
+        syslog_offset.syslog[0].n | int == 2 or
+        syslog_offset.syslog == [{'n': 1, 't': 'no content'}]
+
+- name: Read with an explicit zero page limit
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    limit: 0
+  register: syslog_zero_limit
+  no_log: true
+
+- name: Verify zero retains the server default page limit
+  ansible.builtin.assert:
+    that:
+      - syslog_zero_limit is not changed
+      - syslog_zero_limit.syslog | length <= 50
+
+- name: Read beyond the existing journal output
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    start: 2147483647
+    limit: 1
+  register: syslog_beyond
+  no_log: true
+
+- name: Verify an out-of-range page preserves empty-output semantics
+  ansible.builtin.assert:
+    that:
+      - syslog_beyond is not changed
+      - >-
+        syslog_beyond.syslog in [[], [{'n': 1, 't': 'no content'}]]

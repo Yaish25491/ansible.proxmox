@@ -1,0 +1,74 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the configured service without changing it
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    service: "{{ syslog_test_service }}"
+    limit: "{{ syslog_test_limit }}"
+  register: syslog_service
+  no_log: true
+
+- name: Verify a service query returns an unchanged bounded page
+  ansible.builtin.assert:
+    that:
+      - syslog_service is not changed
+      - syslog_service.syslog is sequence
+      - syslog_service.syslog | length <= syslog_test_limit | int
+
+- name: Query each supported date-time format
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    service: "ansible-syslog-test-{{ integration_resource_ids | join('-') }}"
+    since: "{{ item.since }}"
+    until: "{{ item.until }}"
+    limit: 1
+  loop:
+    - {since: '2000-01-01', until: '2000-01-02'}
+    - {since: '2000-01-01 00:00', until: '2000-01-02 00:00'}
+    - {since: '2000-01-01 00:00:00', until: '2000-01-02 00:00:00'}
+  register: syslog_dates
+  no_log: true
+
+- name: Verify no-match filtering and equivalent date formats
+  ansible.builtin.assert:
+    that:
+      - syslog_dates is not changed
+      - syslog_dates.results | length == 3
+      - syslog_dates.results[0].syslog | length <= 1
+      - syslog_dates.results[0].syslog == syslog_dates.results[1].syslog
+      - syslog_dates.results[1].syslog == syslog_dates.results[2].syslog
+  no_log: true
+
+- name: Repeat a bounded service query in check mode
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    service: "ansible-syslog-test-{{ integration_resource_ids | join('-') }}"
+    since: '2000-01-01'
+    until: '2000-01-02'
+    limit: 1
+  check_mode: true
+  register: syslog_dates_check
+  no_log: true
+
+- name: Verify repeated check-mode reads preserve the filtered result
+  ansible.builtin.assert:
+    that:
+      - syslog_dates_check is not changed
+      - syslog_dates_check.syslog == syslog_dates.results[0].syslog
+  no_log: true
+
+- name: Read with an explicit empty service filter
+  ansible.proxmox.proxmox_node_syslog_info:
+    node: "{{ proxmox_node }}"
+    service: ''
+    limit: 1
+  register: syslog_empty_service
+  no_log: true
+
+- name: Verify an empty service filter is accepted
+  ansible.builtin.assert:
+    that:
+      - syslog_empty_service is not changed
+      - syslog_empty_service.syslog | length <= 1
