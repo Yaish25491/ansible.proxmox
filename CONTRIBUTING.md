@@ -123,3 +123,19 @@ journal contents are hidden from test output. It creates no resources, writes
 no configuration and requires no cleanup. Logs may rotate between calls, so
 pagination checks do not assume a stable journal snapshot. Override the target's
 `syslog_test_service` default to query a different service if needed.
+
+## User identity integration tests
+
+The `proxmox_user` target tests the lifecycle module together with
+`proxmox_user_info`, using the shared private integration configuration.
+Run `ansible-test integration proxmox_user` from the collection root.
+The target creates uniquely named, ownership-checked identity fixtures and
+removes them in `always`, continuing cleanup after individual errors and
+independently verifying removal. It does not assign ACLs or alter the
+controller's authentication identity. Fixtures are passwordless PVE-realm users;
+the primary user's lifecycle briefly exercises enable and disable operations.
+The target checks literal percent signs, question marks and number signs in user
+identifiers, including isolation from a separate account whose name resembles a
+decoded percent escape. It also checks list-all and selected information reads
+in normal and check mode. Full user listings are hidden from test output.
+Run only with explicit authorization to create and remove these test identities.

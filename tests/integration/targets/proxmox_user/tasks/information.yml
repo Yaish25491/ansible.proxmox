@@ -1,0 +1,33 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: List users without exposing unrelated account metadata
+  ansible.proxmox.proxmox_user_info:
+  register: user_info_all
+  no_log: true
+
+- name: List users in check mode without exposing unrelated account metadata
+  ansible.proxmox.proxmox_user_info:
+  register: user_info_check_all
+  check_mode: true
+  no_log: true
+
+- name: Read the literal user identifier in check mode
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_info_selected_check
+  check_mode: true
+
+- name: Verify information results and unchanged status in both modes
+  ansible.builtin.assert:
+    that:
+      - user_info_all is not changed
+      - user_info_check_all is not changed
+      - user_info_selected_check is not changed
+      - user_info_all.users | selectattr('userid', 'equalto', user_test_id) | list == user_actual.users
+      - user_info_check_all.users | selectattr('userid', 'equalto', user_test_id) | list == user_actual.users
+      - user_info_all.users | selectattr('userid', 'equalto', user_test_alias) | list == user_alias_before.users
+      - user_info_check_all.users | selectattr('userid', 'equalto', user_test_alias) | list == user_alias_before.users
+      - user_info_selected_check.users == user_actual.users
+  no_log: true

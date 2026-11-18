@@ -1,0 +1,29 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject a missing realm without creating an account
+  ansible.proxmox.proxmox_user:
+    userid: ansible-missing@ansible-missing-{{ integration_resource_ids | join('') }}
+  register: user_bad_realm
+  check_mode: true
+  ignore_errors: true
+- name: Verify realm validation
+  ansible.builtin.assert:
+    that:
+      - user_bad_realm is failed
+      - user_bad_realm is not changed
+      - '''realm does not exist'' in user_bad_realm.msg'
+- name: Reject protected root deletion in check mode
+  ansible.proxmox.proxmox_user:
+    userid: root@pam
+    state: absent
+  register: user_protected
+  check_mode: true
+  ignore_errors: true
+- name: Verify protected identity rejection
+  ansible.builtin.assert:
+    that:
+      - user_protected is failed
+      - user_protected is not changed
+      - '''cannot be deleted or disabled'' in user_protected.msg'

@@ -1,0 +1,36 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove only the owned users and continue after individual errors
+  ansible.proxmox.proxmox_user:
+    userid: '{{ item }}'
+    state: absent
+  register: user_cleanup_delete
+  loop: '{{ user_test_all_ids }}'
+  ignore_errors: true
+- name: Continue removing supporting owned groups
+  proxmox_user_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ user_test_groups }}'
+    state: absent
+  register: user_cleanup_groups
+  loop: '{{ user_test_groups }}'
+  ignore_errors: true
+- name: Verify every user cleanup independently
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  register: user_cleanup_actual
+  loop: '{{ user_test_all_ids }}'
+- name: Verify each supporting group was removed
+  proxmox_user_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ user_test_groups }}'
+    read_only: true
+  register: user_cleanup_group_actual
+  loop: '{{ user_test_groups }}'
+- name: Expose any remaining owned identities
+  ansible.builtin.assert:
+    that:
+      - user_cleanup_actual.results | map(attribute='users') | flatten | length == 0
+      - user_cleanup_group_actual.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0

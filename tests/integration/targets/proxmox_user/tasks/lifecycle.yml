@@ -1,0 +1,169 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict creating a disabled user
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    enable: false
+    groups: '{{ user_test_groups }}'
+  register: user_prediction
+  check_mode: true
+- name: Verify prediction did not create an account
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_after_prediction
+- name: Verify the complete creation prediction
+  ansible.builtin.assert:
+    that:
+      - user_prediction is changed
+      - not user_prediction.user.enable
+      - user_prediction.user.groups == user_test_groups | sort
+      - user_after_prediction.users == []
+- name: Create the owned disabled PVE user
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    enable: false
+    groups: '{{ user_test_groups }}'
+    firstname: Ansible
+    lastname: Fixture
+    email: ansible-fixture@example.invalid
+    comment: Owned identity fixture
+    expire: 4102444800
+  register: user_created
+- name: Independently read the created account
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_actual
+- name: Verify exact user attributes and membership
+  ansible.builtin.assert:
+    that:
+      - user_created is changed
+      - user_actual is not changed
+      - user_actual.users[0].userid == user_test_id
+      - not user_actual.users[0].enable
+      - user_actual.users[0].groups == user_test_groups | sort
+      - user_actual.users[0].firstname == 'Ansible'
+      - user_actual.users[0].lastname == 'Fixture'
+      - user_actual.users[0].email == 'ansible-fixture@example.invalid'
+      - user_actual.users[0].comment == 'Owned identity fixture'
+      - user_actual.users[0].expire == 4102444800
+- name: Verify information list and check mode against independent reads
+  ansible.builtin.include_tasks: information.yml
+- name: Repeat creation with reordered groups
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    enable: false
+    groups: '{{ user_test_groups | reverse | list }}'
+    firstname: Ansible
+    lastname: Fixture
+    email: ansible-fixture@example.invalid
+    comment: Owned identity fixture
+    expire: 4102444800
+  register: user_repeat
+- name: Verify unchanged user reconciliation
+  ansible.builtin.assert:
+    that:
+      - user_repeat is not changed
+- name: Predict enabling the passwordless fixture account
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    enable: true
+  register: user_enable_prediction
+  check_mode: true
+- name: Verify enable prediction retained disabled state
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_still_disabled
+- name: Verify enable prediction did not write
+  ansible.builtin.assert:
+    that:
+      - user_enable_prediction is changed
+      - user_enable_prediction.user.enable
+      - not user_still_disabled.users[0].enable
+- name: Enable only the owned passwordless account
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    enable: true
+    expire: 0
+  register: user_enabled
+- name: Read actual enable and expiration values
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_enabled_actual
+- name: Verify boolean and zero expiration updates
+  ansible.builtin.assert:
+    that:
+      - user_enabled is changed
+      - user_enabled_actual.users[0].enable
+      - user_enabled_actual.users[0].expire == 0
+- name: Clear only owned account text and group values
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    groups: []
+    email: ''
+    firstname: ''
+    lastname: ''
+    comment: ''
+    enable: false
+  register: user_cleared
+- name: Independently verify explicit empty values
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_empty
+- name: Verify clears and disabled state
+  ansible.builtin.assert:
+    that:
+      - user_cleared is changed
+      - user_empty.users[0].groups == []
+      - user_empty.users[0].email == ''
+      - user_empty.users[0].firstname == ''
+      - user_empty.users[0].lastname == ''
+      - user_empty.users[0].comment == ''
+      - not user_empty.users[0].enable
+- name: Omit attributes to preserve the account
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+  register: user_omitted
+- name: Verify omitted attributes are unchanged
+  ansible.builtin.assert:
+    that:
+      - user_omitted is not changed
+- name: Predict deleting the owned user
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    state: absent
+  register: user_delete_prediction
+  check_mode: true
+- name: Verify deletion prediction retained the account
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_still_exists
+- name: Verify deletion prediction without writes
+  ansible.builtin.assert:
+    that:
+      - user_delete_prediction is changed
+      - user_still_exists.users | length == 1
+- name: Delete the owned user
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    state: absent
+  register: user_deleted
+- name: Independently verify user removal
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_test_id }}'
+  register: user_removed
+- name: Require actual user removal
+  ansible.builtin.assert:
+    that:
+      - user_deleted is changed
+      - user_removed.users == []
+- name: Repeat user deletion
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_test_id }}'
+    state: absent
+  register: user_absent_repeat
+- name: Verify absent user deletion is unchanged
+  ansible.builtin.assert:
+    that:
+      - user_absent_repeat is not changed
