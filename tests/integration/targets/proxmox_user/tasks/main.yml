@@ -1,0 +1,88 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    user_cleanup_allowed: false
+- name: Exercise user lifecycle and independent information reads
+  module_defaults:
+    group/ansible.proxmox.proxmox: &id001
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_user_fixture: *id001
+  block:
+    - name: Verify every owned user identifier is distinct
+      ansible.builtin.assert:
+        that:
+          - user_test_all_ids | unique | length == user_test_all_ids | length
+    - name: Verify all fixture users are absent
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ item }}'
+      register: user_preflight
+      loop: '{{ user_test_all_ids }}'
+    - name: Verify fixture group identifiers are absent
+      proxmox_user_fixture:
+        resource_id: '{{ item }}'
+        owned_ids: '{{ user_test_groups }}'
+        read_only: true
+      register: user_group_preflight
+      loop: '{{ user_test_groups }}'
+    - name: Require unused user and group fixture identifiers
+      ansible.builtin.assert:
+        that:
+          - user_preflight.results | map(attribute='users') | flatten | length == 0
+          - user_group_preflight.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0
+    - name: Claim only the verified absent identity fixtures
+      ansible.builtin.set_fact:
+        user_cleanup_allowed: true
+    - name: Create only the owned supporting groups
+      proxmox_user_fixture:
+        resource_id: '{{ item }}'
+        owned_ids: '{{ user_test_groups }}'
+      register: user_groups_created
+      loop: '{{ user_test_groups }}'
+    - name: Create the owned account that must not alias the percent identifier
+      ansible.proxmox.proxmox_user:
+        userid: '{{ user_test_alias }}'
+        enable: false
+        comment: Owned alias account must remain unchanged
+      register: user_alias_created
+    - name: Independently capture the owned alias account
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ user_test_alias }}'
+      register: user_alias_before
+    - name: Verify the independent alias fixture
+      ansible.builtin.assert:
+        that:
+          - user_alias_created is changed
+          - user_alias_before.users | length == 1
+          - not user_alias_before.users[0].enable
+          - user_alias_before.users[0].comment == 'Owned alias account must remain unchanged'
+    - name: Exercise lifecycle predictions actual values and repeated no-ops
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise literal URL delimiter and percent identifiers
+      ansible.builtin.include_tasks: special_identifiers.yml
+      loop: '{{ user_test_special_ids }}'
+      loop_control:
+        loop_var: user_special_id
+    - name: Independently read the alias after primary user deletion
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ user_test_alias }}'
+      register: user_alias_after
+    - name: Verify no user lifecycle operation changed the alias
+      ansible.builtin.assert:
+        that:
+          - user_alias_after.users == user_alias_before.users
+    - name: Exercise rejected requests without touching unrelated identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Clean and independently verify owned identity fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: user_cleanup_allowed | default(false)

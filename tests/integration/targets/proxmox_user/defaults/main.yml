@@ -1,0 +1,14 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+user_test_id: ansible-user-{{ integration_resource_ids | join('') }}%41@pve
+user_test_alias: ansible-user-{{ integration_resource_ids | join('') }}A@pve
+user_test_special_ids:
+  - ansible-user-{{ integration_resource_ids | join('') }}#tag@pve
+  - ansible-user-{{ integration_resource_ids | join('') }}?tag@pve
+  - ansible-user-{{ integration_resource_ids | join('') }}%2Ftag@pve
+user_test_all_ids: '{{ [user_test_id, user_test_alias] + user_test_special_ids }}'
+user_test_groups:
+  - ansible-usergrp-{{ integration_resource_ids | join('') }}-a
+  - ansible-usergrp-{{ integration_resource_ids | join('') }}-b

@@ -1,0 +1,72 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Create the owned disabled user with a literal special identifier
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_special_id }}'
+    enable: false
+    comment: Owned special identifier fixture
+  register: user_special_created
+
+- name: Independently read the literal identifier in check mode
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_special_id }}'
+  register: user_special_actual
+  check_mode: true
+
+- name: Verify actual creation and literal selected identity
+  ansible.builtin.assert:
+    that:
+      - user_special_created is changed
+      - user_special_actual is not changed
+      - user_special_actual.users | length == 1
+      - user_special_actual.users[0].userid == user_special_id
+      - not user_special_actual.users[0].enable
+      - user_special_actual.users[0].comment == 'Owned special identifier fixture'
+
+- name: Update only the literal special identifier
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_special_id }}'
+    comment: Updated owned special identifier
+  register: user_special_updated
+
+- name: Independently verify the literal identifier update
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_special_id }}'
+  register: user_special_after_update
+
+- name: Require the actual updated value
+  ansible.builtin.assert:
+    that:
+      - user_special_updated is changed
+      - user_special_after_update.users[0].userid == user_special_id
+      - user_special_after_update.users[0].comment == 'Updated owned special identifier'
+
+- name: Repeat the literal identifier update
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_special_id }}'
+    comment: Updated owned special identifier
+  register: user_special_repeat
+
+- name: Verify literal identifier idempotency
+  ansible.builtin.assert:
+    that:
+      - user_special_repeat is not changed
+
+- name: Delete only the owned literal special identifier
+  ansible.proxmox.proxmox_user:
+    userid: '{{ user_special_id }}'
+    state: absent
+  register: user_special_deleted
+
+- name: Independently verify removal of the literal special identifier
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ user_special_id }}'
+  register: user_special_removed
+
+- name: Require actual special identifier removal
+  ansible.builtin.assert:
+    that:
+      - user_special_deleted is changed
+      - user_special_removed.users == []
