@@ -1,0 +1,46 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove every owned child token before its owner
+  ansible.proxmox.proxmox_token:
+    userid: '{{ item }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  loop: '{{ token_test_owned_users }}'
+  register: token_cleanup_delete
+  ignore_errors: true
+- name: Continue removing only the owned users
+  proxmox_token_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ token_test_owned_users }}'
+    state: absent
+  loop: '{{ token_test_owned_users }}'
+  register: token_cleanup_owner
+  ignore_errors: true
+- name: Independently verify every owned token removal
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ item }}'
+    tokenid: '{{ token_test_id }}'
+  loop: '{{ token_test_owned_users }}'
+  register: token_cleanup_actual
+  ignore_errors: true
+- name: Independently verify every fixture owner removal
+  proxmox_token_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ token_test_owned_users }}'
+    read_only: true
+  loop: '{{ token_test_owned_users }}'
+  register: token_cleanup_user_actual
+  ignore_errors: true
+- name: Expose cleanup errors or remaining owned tokens and users
+  ansible.builtin.assert:
+    that:
+      - token_cleanup_delete is not failed
+      - token_cleanup_owner is not failed
+      - token_cleanup_actual is not failed
+      - token_cleanup_user_actual is not failed
+      - token_cleanup_actual.results | selectattr('tokens', 'defined') | map(attribute='tokens') | flatten | length == 0
+      - >-
+        token_cleanup_user_actual.results | selectattr('fixture', 'defined')
+        | rejectattr('fixture', 'none') | list | length == 0

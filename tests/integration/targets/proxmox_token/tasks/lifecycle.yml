@@ -1,0 +1,189 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict token creation without generating a secret
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: true
+    expire: 0
+    comment: Owned token fixture
+  register: token_prediction
+  check_mode: true
+- name: Verify creation prediction did not create a token
+  ansible.proxmox.proxmox_token_info: &id001
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_after_prediction
+- name: Verify metadata prediction without a secret
+  ansible.builtin.assert:
+    that:
+      - token_prediction is changed
+      - token_prediction.token.privsep
+      - token_prediction.token.expire == 0
+      - token_prediction.token_secret is not defined
+      - token_after_prediction.tokens == []
+- name: Create the owned token and hide its one-time secret
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: true
+    expire: 0
+    comment: Owned token fixture
+  register: token_created
+  no_log: true
+- name: Require a one-time secret on actual creation
+  ansible.builtin.assert:
+    that:
+      - token_created is changed
+      - token_created.token_secret | length > 0
+  no_log: true
+- name: Independently read actual token metadata
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_actual
+- name: Verify independently read metadata never includes a secret
+  ansible.builtin.assert:
+    that:
+      - token_actual is not changed
+      - token_actual.tokens | length == 1
+      - token_actual.tokens[0].privsep
+      - token_actual.tokens[0].expire == 0
+      - token_actual.tokens[0].comment == 'Owned token fixture'
+      - token_actual.tokens[0].token_secret is not defined
+- name: Repeat identical token configuration
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: true
+    expire: 0
+    comment: Owned token fixture
+  register: token_repeat
+- name: Verify repeated creation is unchanged without a secret
+  ansible.builtin.assert:
+    that:
+      - token_repeat is not changed
+      - token_repeat.token_secret is not defined
+- name: Predict token metadata changes
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: false
+    expire: 4102444800
+    comment: Updated owned token fixture
+  register: token_update_prediction
+  check_mode: true
+- name: Read actual token after metadata prediction
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_before_update
+- name: Verify metadata check mode leaves actual values unchanged
+  ansible.builtin.assert:
+    that:
+      - token_update_prediction is changed
+      - not token_update_prediction.token.privsep
+      - token_update_prediction.token.expire == 4102444800
+      - token_update_prediction.token_secret is not defined
+      - token_before_update.tokens[0].privsep
+      - token_before_update.tokens[0].expire == 0
+- name: Update only the owned token metadata
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: false
+    expire: 4102444800
+    comment: Updated owned token fixture
+  register: token_updated
+- name: Independently read changed metadata
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_after_update
+- name: Verify updated metadata without secret rotation
+  ansible.builtin.assert:
+    that:
+      - token_updated is changed
+      - token_updated.token_secret is not defined
+      - not token_after_update.tokens[0].privsep
+      - token_after_update.tokens[0].expire == 4102444800
+      - token_after_update.tokens[0].comment == 'Updated owned token fixture'
+- name: Restore separate privileges and clear expiration explicitly
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    privsep: true
+    expire: 0
+  register: token_reset
+- name: Read actual explicit expiration reset
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_after_reset
+- name: Verify explicit zero and omitted comment
+  ansible.builtin.assert:
+    that:
+      - token_reset is changed
+      - token_after_reset.tokens[0].privsep
+      - token_after_reset.tokens[0].expire == 0
+      - token_after_reset.tokens[0].comment == 'Updated owned token fixture'
+- name: Omit metadata to preserve all current values
+  ansible.proxmox.proxmox_token: *id001
+  register: token_omitted
+- name: Verify omitted metadata causes no write or secret
+  ansible.builtin.assert:
+    that:
+      - token_omitted is not changed
+      - token_omitted.token_secret is not defined
+- name: Reject literal zero updates before any write in normal and check mode
+  ansible.builtin.include_tasks: reject_zero_comment.yml
+  loop:
+    - false
+    - true
+  loop_control:
+    loop_var: token_zero_check_mode
+- name: Exercise empty comment updates with independent reads
+  ansible.builtin.include_tasks: comment_update.yml
+  vars:
+    token_desired_comment: ''
+- name: Predict deletion of the owned token
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_delete_prediction
+  check_mode: true
+- name: Verify deletion prediction retained the token
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_still_present
+- name: Verify token deletion check mode
+  ansible.builtin.assert:
+    that:
+      - token_delete_prediction is changed
+      - token_still_present.tokens | length == 1
+- name: Delete only the owned token
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_deleted
+- name: Independently verify token removal
+  ansible.proxmox.proxmox_token_info: *id001
+  register: token_removed
+- name: Require actual token removal
+  ansible.builtin.assert:
+    that:
+      - token_deleted is changed
+      - token_removed.tokens == []
+- name: Repeat token deletion
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_absent_repeat
+- name: Verify token deletion retained its disabled owner
+  proxmox_token_fixture:
+    resource_id: '{{ token_test_user }}'
+    owned_ids: '{{ token_test_owned_users }}'
+    read_only: true
+  register: token_owner_remaining
+- name: Verify repeated deletion and owner preservation
+  ansible.builtin.assert:
+    that:
+      - token_absent_repeat is not changed
+      - token_owner_remaining.fixture != none
+      - not token_owner_remaining.fixture.enable | bool

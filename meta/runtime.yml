@@ -24,6 +24,8 @@ action_groups:
     - proxmox_pool_info
     - proxmox_role
     - proxmox_role_info
+    - proxmox_token
+    - proxmox_token_info
     - proxmox_user
     - proxmox_user_info
     - proxmox_vm
