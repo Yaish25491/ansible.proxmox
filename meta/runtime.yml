@@ -7,6 +7,7 @@ action_groups:
     - proxmox_node_dns
     - proxmox_node_hosts
     - proxmox_node_info
+    - proxmox_node_syslog_info
     - proxmox_node_time
     - proxmox_pool
     - proxmox_pool_info

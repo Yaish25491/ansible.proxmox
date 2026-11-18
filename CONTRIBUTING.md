@@ -106,3 +106,20 @@ The live target never empties the hosts file. Empty-file replacement is covered
 by unit tests and check-mode predictions. Target defaults apply equally to local
 and CI runs; the shared configuration generator and workflow need no host-specific
 configuration.
+
+## Node syslog information integration tests
+
+The `proxmox_node_syslog_info` target makes read-only queries against the
+configured `proxmox_node`. Generate the private configuration using the
+[integration test instructions](README.md#integration-tests), then run:
+
+```bash
+ansible-test integration proxmox_node_syslog_info
+```
+
+The target covers default and explicit pagination, service and date-time
+filters, repeated reads, check mode, missing nodes and rejected inputs. Raw
+journal contents are hidden from test output. It creates no resources, writes
+no configuration and requires no cleanup. Logs may rotate between calls, so
+pagination checks do not assume a stable journal snapshot. Override the target's
+`syslog_test_service` default to query a different service if needed.
