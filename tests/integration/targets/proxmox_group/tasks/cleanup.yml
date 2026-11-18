@@ -1,0 +1,41 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove the owned primary group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_id }}'
+    state: absent
+  register: group_cleanup_delete
+  ignore_errors: true
+- name: Continue removing only the owned users
+  proxmox_group_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    state: absent
+  register: group_cleanup_users
+  loop: '{{ group_test_owned_users }}'
+  ignore_errors: true
+- name: Remove the owned supporting group
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ group_test_other }}'
+    state: absent
+  register: group_cleanup_other
+  ignore_errors: true
+- name: Verify both groups were removed
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ item }}'
+  register: group_cleanup_actual
+  loop: '{{ [group_test_id, group_test_other] }}'
+- name: Independently verify user fixture removal
+  proxmox_group_fixture:
+    resource_id: '{{ item }}'
+    owned_ids: '{{ group_test_owned_users }}'
+    read_only: true
+  register: group_cleanup_user_actual
+  loop: '{{ group_test_owned_users }}'
+- name: Expose any remaining owned group or user
+  ansible.builtin.assert:
+    that:
+      - group_cleanup_actual.results | map(attribute='groups') | flatten | length == 0
+      - group_cleanup_user_actual.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0
