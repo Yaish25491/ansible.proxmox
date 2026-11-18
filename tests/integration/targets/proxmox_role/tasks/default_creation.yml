@@ -1,0 +1,58 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict creation with omitted privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+  check_mode: true
+  register: role_default_prediction
+- name: Independently verify default creation was only predicted
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_after_default_prediction
+- name: Require the empty default prediction without a role
+  ansible.builtin.assert:
+    that:
+      - role_default_prediction is changed
+      - role_default_prediction.role.privileges == []
+      - not role_default_prediction.role.special
+      - role_after_default_prediction.roles == []
+- name: Create the owned role with omitted privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+  register: role_default_created
+- name: Independently read the default privilege set
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_default_actual
+- name: Require an actual empty custom role
+  ansible.builtin.assert:
+    that:
+      - role_default_created is changed
+      - role_default_actual is not changed
+      - role_default_actual.roles[0].roleid == role_test_id
+      - role_default_actual.roles[0].privileges == []
+      - not role_default_actual.roles[0].special
+- name: Repeat the role with omitted privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+  register: role_default_repeat
+- name: Require repeated default creation to be unchanged
+  ansible.builtin.assert:
+    that:
+      - role_default_repeat is not changed
+- name: Remove the owned default-created role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    state: absent
+  register: role_default_deleted
+- name: Independently verify removal of the default-created role
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_default_removed
+- name: Require deletion of the default-created role
+  ansible.builtin.assert:
+    that:
+      - role_default_deleted is changed
+      - role_default_removed.roles == []
