@@ -97,23 +97,45 @@ class ProxmoxResourceModule(ProxmoxBase):
             fields.append("{0}={1}".format(option, value))
         return ",".join(fields)
 
-    def _formatted_entry_name(self, parent, entry, prefix):
+    @staticmethod
+    def _parse_formatted_options(value):
+        """Parse a Proxmox property string without interpreting field values.
+
+        Args:
+            value: Comma-separated API string, such as 'virtio,bridge=vmbr0'.
+
+        Returns:
+            String fields by key; unkeyed fields map to an empty string.
+            Empty or non-string input produces an empty mapping.
+        """
+        if not isinstance(value, str) or not value:
+            return {}
+        options = {}
+        for item in value.split(","):
+            key, separator, field_value = item.partition("=")
+            if key.strip():
+                options[key.strip()] = field_value.strip() if separator else ""
+        return options
+
+    def _formatted_entry_name(self, parent, entry, prefix, name_field="name"):
         """Validate an entry's API name, failing the module for invalid names.
 
         Args:
             parent: Structured module parameter name, such as 'net'.
-            entry: Option mapping containing a 'name' field.
+            entry: Option mapping containing the API parameter name field.
             prefix: Indexed name prefix, or None for an exact parent name.
+            name_field: Entry field containing the API parameter name.
 
         Returns:
             The validated API parameter name, such as 'net0'.
         """
-        if not isinstance(entry, dict) or "name" not in entry:
+        example = "{0}0".format(prefix) if prefix else parent
+        if not isinstance(entry, dict) or name_field not in entry:
             self.module.fail_json(
-                msg="Each {0} entry must be a mapping with a name such as {1}0.".format(parent, prefix)
+                msg="Each {0} entry must be a mapping with {1} such as {2}.".format(parent, name_field, example)
             )
 
-        api_parameter = entry["name"]
+        api_parameter = entry[name_field]
         if prefix is None:
             if api_parameter != parent:
                 self.module.fail_json(msg="{0} entry name must be {0}.".format(parent))
@@ -127,28 +149,31 @@ class ProxmoxResourceModule(ProxmoxBase):
                 )
         return api_parameter
 
-    def _formatted_entries(self, parent, entries, prefix):
+    def _formatted_entries(self, parent, entries, prefix, name_field="name"):
         """Yield validated API names and options, rejecting duplicate names.
 
         Args:
             parent: Structured module parameter name.
-            entries: List of option mappings with 'name' fields.
-            prefix: Indexed name prefix, or None for an exact parent name.
+            entries: List of option mappings with API parameter name fields.
+            prefix: Indexed name prefix, or None for an exact name.
+            name_field: Entry field containing the API parameter name.
 
         Yields:
-            Pairs of API parameter names and new option mappings without 'name'.
+            Pairs of API parameter names and new option mappings without name_field.
         """
         seen = set()
         for entry in entries:
-            api_parameter = self._formatted_entry_name(parent, entry, prefix)
+            api_parameter = self._formatted_entry_name(parent, entry, prefix, name_field)
             if api_parameter in seen:
                 self.module.fail_json(msg="Duplicate formatted API parameter {0}.".format(api_parameter))
             seen.add(api_parameter)
             options = dict(entry)
-            options.pop("name")
+            options.pop(name_field)
             yield api_parameter, options
 
-    def _serialize_formatted_entries(self, parent, entries, prefix, primary_field, fixed_options):
+    def _serialize_formatted_entries(
+        self, parent, entries, prefix, primary_field, fixed_options, name_field="name"
+    ):
         """Serialize named entries into indexed Proxmox property strings.
 
         Args:
@@ -157,12 +182,13 @@ class ProxmoxResourceModule(ProxmoxBase):
             prefix: Expected API parameter prefix, or None for an exact name.
             primary_field: Optional unkeyed option field.
             fixed_options: Options applied to every entry.
+            name_field: Entry field containing the API parameter name.
 
         Returns:
             API parameter names mapped to serialized property strings.
         """
         serialized = {}
-        for api_parameter, options in self._formatted_entries(parent, entries, prefix):
+        for api_parameter, options in self._formatted_entries(parent, entries, prefix, name_field):
             options.update(fixed_options)
             serialized[api_parameter] = self._serialize_formatted_options(options, primary_field)
         return serialized
@@ -174,6 +200,7 @@ class ProxmoxResourceModule(ProxmoxBase):
         prefixes,
         primary_fields=None,
         fixed_options=None,
+        entry_name_fields=None,
     ):
         """Expand structured module values into Proxmox API parameters.
 
@@ -183,6 +210,7 @@ class ProxmoxResourceModule(ProxmoxBase):
             prefixes: Indexed API prefixes by parent; None means an exact name.
             primary_fields: Optional unkeyed field names by parent.
             fixed_options: Required option mappings by parent, overriding input.
+            entry_name_fields: Entry identifier fields by parent; defaults to 'name'.
 
         Returns:
             A new mapping with formatted parents replaced by API property strings.
@@ -190,6 +218,7 @@ class ProxmoxResourceModule(ProxmoxBase):
         """
         primary_fields = primary_fields or {}
         fixed_options = fixed_options or {}
+        entry_name_fields = entry_name_fields or {}
         serialized = {}
         for key, value in parameters.items():
             if key not in formatted_parameters:
@@ -216,33 +245,10 @@ class ProxmoxResourceModule(ProxmoxBase):
                     prefixes.get(parent, parent),
                     primary_fields.get(parent),
                     fixed_options.get(parent, {}),
+                    entry_name_fields.get(parent, "name"),
                 )
             )
         return serialized
-
-    @staticmethod
-    def _parse_formatted_options(value):
-        """Parse a Proxmox property string without interpreting field values.
-
-        Args:
-            value: Comma-separated API string, such as 'virtio,bridge=vmbr0'.
-
-        Returns:
-            String fields by key; unkeyed fields map to an empty string.
-            Empty or non-string input produces an empty mapping.
-        """
-        if not isinstance(value, str) or not value:
-            return {}
-
-        options = {}
-        for item in value.split(","):
-            key, separator, field_value = item.partition("=")
-            if key.strip():
-                parsed_value = ""
-                if separator:
-                    parsed_value = field_value.strip()
-                options[key.strip()] = parsed_value
-        return options
 
     @staticmethod
     def _formatted_values_equal(current, desired):
@@ -356,7 +362,9 @@ class ProxmoxResourceModule(ProxmoxBase):
         updated_options.update(requested_options)
         return self._serialize_formatted_options(updated_options, primary_field)
 
-    def _list_formatted_updates(self, parent, entries, resource, prefix, primary_field, fixed_options):
+    def _list_formatted_updates(
+        self, parent, entries, resource, prefix, primary_field, fixed_options, name_field="name"
+    ):
         """Compare a complete entry list and identify stale indexed devices.
 
         Args:
@@ -366,6 +374,7 @@ class ProxmoxResourceModule(ProxmoxBase):
             prefix: Indexed prefix, or None to disable stale-device removal.
             primary_field: Optional unkeyed field name.
             fixed_options: Required options for each entry.
+            name_field: Entry field containing the API parameter name.
 
         Returns:
             A pair containing changed API parameters and sorted stale names.
@@ -373,7 +382,7 @@ class ProxmoxResourceModule(ProxmoxBase):
         """
         updates = {}
         desired_names = set()
-        for api_parameter, desired_options in self._formatted_entries(parent, entries, prefix):
+        for api_parameter, desired_options in self._formatted_entries(parent, entries, prefix, name_field):
             desired_names.add(api_parameter)
             update = self._formatted_entry_update(
                 api_parameter,
@@ -425,6 +434,7 @@ class ProxmoxResourceModule(ProxmoxBase):
         prefixes,
         primary_fields=None,
         fixed_options=None,
+        entry_name_fields=None,
     ):
         """Build formatted API updates, including removal of stale entries.
 
@@ -435,6 +445,7 @@ class ProxmoxResourceModule(ProxmoxBase):
             prefixes: Indexed API prefixes by parent; None disables removal.
             primary_fields: Optional unkeyed field names by parent.
             fixed_options: Required option mappings by parent.
+            entry_name_fields: Entry identifier fields by parent; defaults to 'name'.
 
         Returns:
             Changed API strings with stale names in a comma-separated 'delete'
@@ -442,6 +453,7 @@ class ProxmoxResourceModule(ProxmoxBase):
         """
         primary_fields = primary_fields or {}
         fixed_options = fixed_options or {}
+        entry_name_fields = entry_name_fields or {}
         updates = {}
         deletions = []
 
@@ -473,6 +485,7 @@ class ProxmoxResourceModule(ProxmoxBase):
                 prefix,
                 primary_field,
                 fixed_options.get(parent, {}),
+                entry_name_fields.get(parent, "name"),
             )
             updates.update(parent_updates)
             deletions.extend(parent_deletions)

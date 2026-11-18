@@ -1,0 +1,59 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove the owned LXC fixture
+  ansible.proxmox.proxmox_lxc: # noqa: args[module]
+    node: "{{ proxmox_node }}"
+    vmid: "{{ lxc_test_vmid }}"
+    power_cycle: 'off'
+    state: absent
+  register: lxc_cleanup_result
+  ignore_errors: true
+
+- name: Read the owned pool before detaching remaining members
+  ansible.proxmox.proxmox_pool_info: # noqa: args[module]
+    poolid: "{{ lxc_test_poolid }}"
+  register: lxc_cleanup_pool_before_detach
+  ignore_errors: true
+
+- name: Detach remaining members from the owned LXC test pool
+  ansible.proxmox.proxmox_pool: # noqa: args[module]
+    poolid: "{{ lxc_test_poolid }}"
+    vms: []
+    storage: []
+  when:
+    - lxc_cleanup_pool_before_detach is not failed
+    - lxc_cleanup_pool_before_detach.pools | length > 0
+  register: lxc_cleanup_pool_detach
+  ignore_errors: true
+
+- name: Remove the owned LXC test pool
+  ansible.proxmox.proxmox_pool: # noqa: args[module]
+    poolid: "{{ lxc_test_poolid }}"
+    state: absent
+  register: lxc_cleanup_pool_result
+  ignore_errors: true
+
+- name: Verify the LXC fixture was removed
+  ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+    node: "{{ proxmox_node }}"
+    vmid: "{{ lxc_test_vmid }}"
+  register: lxc_cleanup_info
+  ignore_errors: true
+
+- name: Verify the LXC test pool was removed
+  ansible.proxmox.proxmox_pool_info: # noqa: args[module]
+    poolid: "{{ lxc_test_poolid }}"
+  register: lxc_cleanup_pool_info
+  ignore_errors: true
+
+- name: Assert owned resources were cleaned up
+  ansible.builtin.assert:
+    that:
+      - lxc_cleanup_result is not failed
+      - lxc_cleanup_pool_result is not failed
+      - lxc_cleanup_info is not failed
+      - lxc_cleanup_info.lxcs | length == 0
+      - lxc_cleanup_pool_info is not failed
+      - lxc_cleanup_pool_info.pools | length == 0

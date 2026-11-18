@@ -1,0 +1,585 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise the LXC create, update, and delete lifecycle
+  module_defaults:
+    group/ansible.proxmox.proxmox: &lxc_test_connection
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Generate fixture credentials and detect root password authentication
+      ansible.builtin.set_fact:
+        lxc_test_root_password: "{{ lookup('password', '/dev/null length=32') }}"
+        lxc_test_root_password_auth: >-
+          {{ (proxmox_api_user | default('')) == 'root@pam'
+             and (proxmox_api_password | default('', true) | length) > 0
+             and (proxmox_api_token_id | default('', true) | length) == 0
+             and (proxmox_api_token_secret | default('', true) | length) == 0 }}
+      no_log: true
+
+    - name: Select feature flags permitted by the integration credentials
+      ansible.builtin.set_fact:
+        lxc_test_features: "{{ 'nesting=1,keyctl=1' if lxc_test_root_password_auth | bool else 'nesting=1' }}"
+        lxc_test_updated_features: "{{ 'nesting=1,keyctl=0' if lxc_test_root_password_auth | bool else 'nesting=1' }}"
+
+    - name: Check that the LXC fixture VMID is unused
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_preflight
+
+    - name: Check that the LXC fixture VMID is unused by QEMU
+      ansible.proxmox.proxmox_vm_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_qemu_preflight
+
+    - name: Check that the LXC test pool does not already exist
+      ansible.proxmox.proxmox_pool_info: # noqa: args[module]
+        poolid: "{{ lxc_test_poolid }}"
+      register: lxc_pool_preflight
+
+    - name: Refuse to overwrite resources not owned by this target
+      ansible.builtin.assert:
+        that:
+          - lxc_preflight.lxcs | length == 0
+          - lxc_qemu_preflight.vms | length == 0
+          - lxc_pool_preflight.pools | length == 0
+        fail_msg: The randomized LXC fixture VMID or pool already exists; refusing to modify it.
+
+    - name: Claim ownership of the LXC integration fixtures
+      ansible.builtin.set_fact:
+        lxc_cleanup_allowed: true
+
+    - name: Create the owned LXC test pool
+      ansible.proxmox.proxmox_pool: # noqa: args[module]
+        poolid: "{{ lxc_test_poolid }}"
+        comment: Owned by the LXC integration target
+      register: lxc_pool_create
+
+    - name: Read the created LXC test pool
+      ansible.proxmox.proxmox_pool_info: # noqa: args[module]
+        poolid: "{{ lxc_test_poolid }}"
+      register: lxc_pool_created_info
+
+    - name: Assert the test pool was created
+      ansible.builtin.assert:
+        that:
+          - lxc_pool_create is changed
+          - lxc_pool_create.pool.poolid == lxc_test_poolid
+          - lxc_pool_created_info.pools | length == 1
+
+    - name: Predict full LXC creation in check mode
+      ansible.proxmox.proxmox_lxc: &lxc_full_config_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        ostemplate: "{{ lxc_test_template }}"
+        hostname: fedora-nested
+        password: "{{ lxc_test_root_password }}"
+        pool: "{{ lxc_test_poolid }}"
+        tags: ansible,nested
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 4
+        cpulimit: 4
+        cpuunits: 1000
+        memory: 4096
+        swap: 1024
+        network:
+          - device: net0
+            name: eth0
+            type: veth
+            bridge: vmbr0
+            firewall: true
+            hwaddr: "{{ lxc_test_hwaddr }}"
+            ip: 192.0.2.100/24
+            gw: 192.0.2.1
+            ip6: 2001:db8::100/64
+            gw6: 2001:db8::1
+            host_managed: false
+            link_down: false
+            mtu: 1500
+            rate: 100
+            tag: 20
+          - device: net1
+            name: eth1
+            bridge: vmbr1
+            firewall: true
+            ip: dhcp
+            ip6: dhcp
+            trunks: "100;200"
+        nameserver: 1.1.1.1
+        searchdomain: example.net
+        features: "{{ lxc_test_features }}"
+        arch: amd64
+        ostype: fedora
+        power_cycle: 'on'
+        state: present
+      check_mode: true
+      register: lxc_create_check
+
+    - name: Read LXC after predicting creation
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_create_check
+
+    - name: Assert check-mode creation prediction and non-mutation
+      ansible.builtin.assert:
+        that:
+          - lxc_create_check is changed
+          - lxc_create_check.task_upid is not defined
+          - lxc_create_check.lxc.vmid | int == lxc_test_vmid | int
+          - lxc_create_check.lxc.hostname == 'fedora-nested'
+          - lxc_after_create_check.lxcs | length == 0
+
+    - name: Create the full LXC fixture
+      ansible.proxmox.proxmox_lxc: *lxc_full_config_args # noqa: args[module]
+      register: lxc_create
+
+    - name: Read LXC after creation
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_created_info
+
+    - name: Read pool membership after LXC creation
+      ansible.proxmox.proxmox_pool_info: # noqa: args[module]
+        poolid: "{{ lxc_test_poolid }}"
+      register: lxc_pool_membership
+
+    - name: Assert full LXC creation output and configuration
+      ansible.builtin.assert:
+        that:
+          - lxc_create is changed
+          - lxc_create.task_upid is defined
+          - lxc_create.lxc.vmid | int == lxc_test_vmid | int
+          - lxc_create.lxc.hostname == 'fedora-nested'
+          - lxc_created_info is not changed
+          - lxc_created_info.lxcs | length == 1
+          - lxc_created_info.lxcs[0].vmid | int == lxc_test_vmid | int
+          - lxc_created_info.lxcs[0].hostname == 'fedora-nested'
+          - lxc_created_info.lxcs[0].unprivileged | int == 1
+          - lxc_created_info.lxcs[0].cores | int == 4
+          - lxc_created_info.lxcs[0].cpulimit | float == 4.0
+          - lxc_created_info.lxcs[0].cpuunits | int == 1000
+          - lxc_created_info.lxcs[0].memory | int == 4096
+          - lxc_created_info.lxcs[0].swap | int == 1024
+          - lxc_created_info.lxcs[0].nameserver == '1.1.1.1'
+          - lxc_created_info.lxcs[0].searchdomain == 'example.net'
+          - "'nesting=1' in lxc_created_info.lxcs[0].features"
+          - "('keyctl=1' in lxc_test_features) == ('keyctl=1' in lxc_created_info.lxcs[0].features)"
+          - "'bridge=vmbr0' in lxc_created_info.lxcs[0].net0"
+          - "'tag=20' in lxc_created_info.lxcs[0].net0"
+          - "'trunks=100;200' in lxc_created_info.lxcs[0].net1"
+          - lxc_pool_membership.pools[0].members | map(attribute='vmid') | map('int') | select('equalto', lxc_test_vmid | int) | list | length == 1
+
+    - name: Reapply full LXC creation idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_full_config_args # noqa: args[module]
+      register: lxc_create_again
+
+    - name: Read LXC after idempotent creation
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_create_again
+
+    - name: Assert LXC creation idempotency and unchanged info
+      ansible.builtin.assert:
+        that:
+          - lxc_create_again is not changed
+          - lxc_after_create_again.lxcs | length == 1
+          - lxc_after_create_again.lxcs[0].hostname == 'fedora-nested'
+          - lxc_after_create_again.lxcs[0].memory | int == 4096
+
+    - name: Read LXC summary before predicting update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_before_update_check_summary
+
+    - name: Capture LXC power state before check-mode update
+      ansible.builtin.set_fact:
+        lxc_powerstate_before_update_check: >-
+          {{ (lxc_before_update_check_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Predict broad LXC update in check mode
+      ansible.proxmox.proxmox_lxc: &lxc_updated_config_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        hostname: fedora-nested-updated
+        tags: ansible,nested,updated
+        cores: 6
+        cpulimit: 3
+        cpuunits: 2000
+        memory: 6144
+        swap: 1536
+        network:
+          - device: net0
+            name: eth0
+            type: veth
+            bridge: vmbr0
+            firewall: false
+            hwaddr: "{{ lxc_test_hwaddr }}"
+            ip: 192.0.2.101/24
+            gw: 192.0.2.1
+            ip6: 2001:db8::101/64
+            gw6: 2001:db8::1
+            host_managed: false
+            link_down: false
+            mtu: 1450
+            rate: 200
+            tag: 20
+          - device: net1
+            name: eth1
+            bridge: vmbr1
+            firewall: false
+            ip: dhcp
+            ip6: dhcp
+            trunks: "100;200"
+        nameserver: 9.9.9.9
+        searchdomain: updated.example.net
+        features: "{{ lxc_test_updated_features }}"
+        arch: amd64
+        ostype: fedora
+        power_cycle: 'on'
+        state: present
+      check_mode: true
+      register: lxc_update_check
+
+    - name: Read LXC after predicting update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_update_check
+
+    - name: Read LXC summary after predicting update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_after_update_check_summary
+
+    - name: Capture LXC power state after check-mode update
+      ansible.builtin.set_fact:
+        lxc_powerstate_after_update_check: >-
+          {{ (lxc_after_update_check_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Assert check-mode update prediction and non-mutation
+      ansible.builtin.assert:
+        that:
+          - lxc_update_check is changed
+          - lxc_update_check.task_upid is not defined
+          - lxc_update_check.lxc.hostname == 'fedora-nested-updated'
+          - lxc_after_update_check.lxcs[0].hostname == 'fedora-nested'
+          - lxc_after_update_check.lxcs[0].memory | int == 4096
+          - "('keyctl=1' in lxc_test_features) == ('keyctl=1' in lxc_after_update_check.lxcs[0].features)"
+          - lxc_powerstate_before_update_check == 'running'
+          - lxc_powerstate_after_update_check == lxc_powerstate_before_update_check
+
+    - name: Apply broad LXC update with a stop and restart
+      ansible.proxmox.proxmox_lxc: *lxc_updated_config_args # noqa: args[module]
+      register: lxc_update
+
+    - name: Read LXC after update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_updated_info
+
+    - name: Assert broad LXC update output and configuration
+      ansible.builtin.assert:
+        that:
+          - lxc_update is changed
+          - lxc_update.task_upid is defined
+          - lxc_update.lxc.hostname == 'fedora-nested-updated'
+          - lxc_updated_info is not changed
+          - lxc_updated_info.lxcs | length == 1
+          - lxc_updated_info.lxcs[0].hostname == 'fedora-nested-updated'
+          - "'ansible' in lxc_updated_info.lxcs[0].tags"
+          - "'updated' in lxc_updated_info.lxcs[0].tags"
+          - lxc_updated_info.lxcs[0].cores | int == 6
+          - lxc_updated_info.lxcs[0].cpulimit | float == 3.0
+          - lxc_updated_info.lxcs[0].cpuunits | int == 2000
+          - lxc_updated_info.lxcs[0].memory | int == 6144
+          - lxc_updated_info.lxcs[0].swap | int == 1536
+          - lxc_updated_info.lxcs[0].nameserver == '9.9.9.9'
+          - lxc_updated_info.lxcs[0].searchdomain == 'updated.example.net'
+          - "('keyctl=0' in lxc_test_updated_features) == ('keyctl=0' in lxc_updated_info.lxcs[0].features)"
+          - "'ip=192.0.2.101/24' in lxc_updated_info.lxcs[0].net0"
+          - "'mtu=1450' in lxc_updated_info.lxcs[0].net0"
+          - "'rate=200' in lxc_updated_info.lxcs[0].net0"
+          - "'firewall=0' in lxc_updated_info.lxcs[0].net0"
+          - "'firewall=0' in lxc_updated_info.lxcs[0].net1"
+
+    - name: Reapply broad LXC update idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_updated_config_args # noqa: args[module]
+      register: lxc_update_again
+
+    - name: Read LXC after idempotent update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_update_again
+
+    - name: Assert LXC update idempotency and unchanged info
+      ansible.builtin.assert:
+        that:
+          - lxc_update_again is not changed
+          - lxc_after_update_again.lxcs[0].hostname == 'fedora-nested-updated'
+          - lxc_after_update_again.lxcs[0].memory | int == 6144
+
+    - name: Reset LXC memory, CPU limit, and swap to their defaults
+      ansible.proxmox.proxmox_lxc: &lxc_default_reset_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        cpulimit: 0
+        memory: 512
+        swap: 512
+        power_cycle: 'on'
+      register: lxc_default_reset
+
+    - name: Read LXC after resetting defaults
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_default_reset
+
+    - name: Assert default values were restored
+      ansible.builtin.assert:
+        that:
+          - lxc_default_reset is changed
+          - lxc_after_default_reset.lxcs[0].memory | int == 512
+          - lxc_after_default_reset.lxcs[0].cpulimit | default(0) | float == 0.0
+          - lxc_after_default_reset.lxcs[0].swap | default(512) | int == 512
+
+    - name: Reapply LXC defaults idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_default_reset_args # noqa: args[module]
+      register: lxc_default_reset_again
+
+    - name: Assert default reset idempotency
+      ansible.builtin.assert:
+        that:
+          - lxc_default_reset_again is not changed
+
+    - name: Remove net1 with the authoritative network list
+      ansible.proxmox.proxmox_lxc: &lxc_net0_only_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        network:
+          - device: net0
+            name: eth0
+        power_cycle: 'on'
+      register: lxc_network_remove
+
+    - name: Read LXC after removing net1
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_network_remove
+
+    - name: Assert omitted network interfaces are deleted
+      ansible.builtin.assert:
+        that:
+          - lxc_network_remove is changed
+          - lxc_after_network_remove.lxcs[0].net0 is defined
+          - lxc_after_network_remove.lxcs[0].net1 is not defined
+
+    - name: Reapply the one-interface network list idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_net0_only_args # noqa: args[module]
+      register: lxc_network_remove_again
+
+    - name: Assert network removal idempotency
+      ansible.builtin.assert:
+        that:
+          - lxc_network_remove_again is not changed
+
+    - name: Read LXC summary before hotplug update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_before_hotplug_summary
+
+    - name: Capture LXC power state before hotplug update
+      ansible.builtin.set_fact:
+        lxc_powerstate_before_hotplug: >-
+          {{ (lxc_before_hotplug_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Queue a feature change with hotplug policy
+      ansible.proxmox.proxmox_lxc: &lxc_hotplug_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        features: nesting=0
+        power_cycle: hotplug
+      register: lxc_hotplug_update
+
+    - name: Read LXC summary after hotplug update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_after_hotplug_summary
+
+    - name: Capture LXC power state after hotplug update
+      ansible.builtin.set_fact:
+        lxc_powerstate_after_hotplug: >-
+          {{ (lxc_after_hotplug_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Assert hotplug update preserves power state
+      ansible.builtin.assert:
+        that:
+          - lxc_hotplug_update is changed
+          - lxc_powerstate_before_hotplug == 'running'
+          - lxc_powerstate_after_hotplug == lxc_powerstate_before_hotplug
+
+    - name: Reapply pending hotplug feature update idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_hotplug_args # noqa: args[module]
+      register: lxc_hotplug_update_again
+
+    - name: Read LXC summary after reapplying hotplug update
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_after_hotplug_again_summary
+
+    - name: Assert pending hotplug state is used for idempotency
+      ansible.builtin.assert:
+        that:
+          - lxc_hotplug_update_again is not changed
+          - >-
+            (lxc_after_hotplug_again_summary.lxcs
+             | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+             | first).status == lxc_powerstate_before_hotplug
+
+    - name: Reject an unsupported CPU weight without changing the LXC
+      block:
+        - name: Submit an out-of-range CPU weight
+          ansible.proxmox.proxmox_lxc: # noqa: args[module]
+            node: "{{ proxmox_node }}"
+            vmid: "{{ lxc_test_vmid }}"
+            cpuunits: 10001
+            power_cycle: 'on'
+          register: lxc_invalid_cpuunits
+
+        - name: Fail if the out-of-range CPU weight is accepted
+          ansible.builtin.fail:
+            msg: The LXC module unexpectedly accepted cpuunits 10001.
+
+      rescue:
+        - name: Assert the CPU weight was rejected before mutation
+          ansible.builtin.assert:
+            that:
+              - lxc_invalid_cpuunits is defined
+              - lxc_invalid_cpuunits is failed
+              - not (lxc_invalid_cpuunits.changed | default(false) | bool)
+              - "'cpuunits must be at least 8 and at most 10000.' in lxc_invalid_cpuunits.msg"
+
+    - name: Read LXC after rejecting the CPU weight
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_invalid_cpuunits
+
+    - name: Assert rejected CPU weight left the LXC unchanged
+      ansible.builtin.assert:
+        that:
+          - lxc_after_invalid_cpuunits is not changed
+          - lxc_after_invalid_cpuunits.lxcs[0].cpuunits | int == 2000
+
+    - name: Read LXC summary before predicting deletion
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_before_delete_check_summary
+
+    - name: Capture LXC power state before check-mode deletion
+      ansible.builtin.set_fact:
+        lxc_powerstate_before_delete_check: >-
+          {{ (lxc_before_delete_check_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Predict LXC deletion in check mode
+      ansible.proxmox.proxmox_lxc: &lxc_delete_args # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+        power_cycle: 'off'
+        state: absent
+      check_mode: true
+      register: lxc_delete_check
+
+    - name: Read LXC after predicting deletion
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_delete_check
+
+    - name: Read LXC summary after predicting deletion
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+      register: lxc_after_delete_check_summary
+
+    - name: Capture LXC power state after check-mode deletion
+      ansible.builtin.set_fact:
+        lxc_powerstate_after_delete_check: >-
+          {{ (lxc_after_delete_check_summary.lxcs
+              | selectattr('vmid', 'equalto', lxc_test_vmid | int)
+              | first).status }}
+
+    - name: Assert check-mode deletion prediction and non-mutation
+      ansible.builtin.assert:
+        that:
+          - lxc_delete_check is changed
+          - lxc_delete_check.task_upid is not defined
+          - lxc_delete_check.lxc.vmid | int == lxc_test_vmid | int
+          - lxc_after_delete_check.lxcs | length == 1
+          - lxc_after_delete_check.lxcs[0].hostname == 'fedora-nested-updated'
+          - lxc_powerstate_before_delete_check == 'running'
+          - lxc_powerstate_after_delete_check == lxc_powerstate_before_delete_check
+
+    - name: Delete the LXC fixture
+      ansible.proxmox.proxmox_lxc: *lxc_delete_args # noqa: args[module]
+      register: lxc_delete
+
+    - name: Read LXC after deletion
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_deleted_info
+
+    - name: Assert LXC deletion output and absence
+      ansible.builtin.assert:
+        that:
+          - lxc_delete is changed
+          - lxc_delete.task_upid is defined
+          - lxc_delete.lxc.vmid | int == lxc_test_vmid | int
+          - lxc_deleted_info is not changed
+          - lxc_deleted_info.lxcs | length == 0
+
+    - name: Repeat LXC deletion idempotently
+      ansible.proxmox.proxmox_lxc: *lxc_delete_args # noqa: args[module]
+      register: lxc_delete_again
+
+    - name: Read LXC after idempotent deletion
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_test_vmid }}"
+      register: lxc_after_delete_again
+
+    - name: Assert LXC deletion idempotency and continued absence
+      ansible.builtin.assert:
+        that:
+          - lxc_delete_again is not changed
+          - lxc_after_delete_again.lxcs | length == 0
+
+  always:
+    - name: Clean up owned LXC integration resources
+      ansible.builtin.include_tasks: cleanup.yml
+      when: lxc_cleanup_allowed | default(false)

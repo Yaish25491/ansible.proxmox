@@ -11,31 +11,52 @@ from .proxmox_task import ProxmoxTask
 
 
 class ProxmoxPower(ProxmoxBase):
-    """Shared QEMU VM power-state checks and operations."""
+    """Shared guest power-state checks and operations."""
 
     POWER_STATES = {
-        "start": "running", "stop": "stopped", "shutdown": "stopped",
-        "reset": "running", "reboot": "running", "pause": "paused",
-        "hibernate": "suspended", "resume": "running",
+        "start": "running",
+        "stop": "stopped",
+        "shutdown": "stopped",
+        "reset": "running",
+        "reboot": "running",
+        "pause": "paused",
+        "hibernate": "suspended",
+        "resume": "running",
     }
+    LXC_POWER_ACTIONS = ("start", "stop", "shutdown", "reboot")
+
+    def __init__(self, module, client=None, guest_type="qemu"):
+        """Select the guest API while preserving QEMU as the default.
+
+        Args:
+            module: Ansible module supplying connection and guest parameters.
+            client: Optional shared Proxmox client.
+            guest_type: Proxmox guest API family, either qemu or lxc.
+        """
+        super().__init__(module, client=client)
+        if guest_type not in ("qemu", "lxc"):
+            self.module.fail_json(msg="guest_type must be qemu or lxc.")
+        self.guest_type = guest_type
+        self.guest_label = "LXC container" if guest_type == "lxc" else "VM"
 
     def resolve_node(self):
-        """Locate a QEMU VM by its cluster-wide identifier.
+        """Locate a guest by its cluster-wide identifier and API family.
 
         Returns:
-            The node name containing the VM, cached for subsequent calls.
+            The node name containing the guest, cached for subsequent calls.
         """
         vmid = self.module.params["vmid"]
         if not 100 <= vmid <= 999999999:
             self.module.fail_json(msg="VMID must be between 100 and 999999999.")
         if not getattr(self, "_node", None):
-            resources = self.call_api("Locating VM {0}".format(vmid), self.api.cluster.resources.get, type="vm")
+            resources = self.call_api("Locating {0} {1}".format(self.guest_label, vmid), self.api.cluster.resources.get, type="vm")
             for resource in resources:
-                if resource.get("type") == "qemu" and str(resource.get("vmid")) == str(vmid) and resource.get("node"):
+                if resource.get("type") == self.guest_type and str(resource.get("vmid")) == str(vmid) and resource.get("node"):
                     self._node = resource["node"]
                     break
             else:
-                self.module.fail_json(msg="QEMU VM {0} does not exist or is not visible to this identity.".format(vmid))
+                label = "QEMU VM" if self.guest_type == "qemu" else self.guest_label
+                self.module.fail_json(msg="{0} {1} does not exist or is not visible to this identity.".format(label, vmid))
         return self._node
 
     def node(self):
@@ -47,15 +68,15 @@ class ProxmoxPower(ProxmoxBase):
         return self.module.params.get("node") or self.resolve_node()
 
     def vm_resource(self):
-        """Build the API resource for the selected QEMU VM.
+        """Build the API resource for the selected guest.
 
         Returns:
-            The proxmoxer QEMU resource on the VM's node.
+            The proxmoxer guest resource on its node.
         """
-        return self.api.nodes(self.node()).qemu(self.module.params["vmid"])
+        return getattr(self.api.nodes(self.node()), self.guest_type)(self.module.params["vmid"])
 
     def get_status(self, return_none_on_404=False):
-        """Retrieve the VM's current power status.
+        """Retrieve the selected guest's current power status with GET.
 
         Args:
             return_none_on_404: Whether HTTP 404 should return None instead of
@@ -67,28 +88,28 @@ class ProxmoxPower(ProxmoxBase):
         node = self.node()
         vmid = self.module.params["vmid"]
         return self.call_api(
-            "Retrieving VM {0} status on node {1}".format(vmid, node),
+            "Retrieving {0} {1} status on node {2}".format(self.guest_label, vmid, node),
             self.vm_resource().status.current.get,
             return_none_on_404=return_none_on_404,
         )
 
     def get_powerstate(self):
-        """Normalize current QEMU status, preserving pause and disk suspension.
+        """Normalize guest status while keeping QEMU-specific states separate.
 
         Returns:
-            One of stopped, running, paused, or suspended. Unrecognized status
-            responses fail the module rather than returning a guessed state.
+            LXC guests report stopped or running. QEMU additionally supports
+            paused and suspended. Unknown responses fail instead of guessing.
         """
         status = self.get_status()
         if isinstance(status, dict):
             if status.get("status") == "stopped":
-                return "suspended" if status.get("lock") == "suspended" else "stopped"
+                return "suspended" if self.guest_type == "qemu" and status.get("lock") == "suspended" else "stopped"
             if status.get("status") == "running":
-                if status.get("qmpstatus") == "paused":
+                if self.guest_type == "qemu" and status.get("qmpstatus") == "paused":
                     return "paused"
-                if status.get("qmpstatus", "running") == "running":
+                if self.guest_type == "lxc" or status.get("qmpstatus", "running") == "running":
                     return "running"
-        self.module.fail_json(msg="Unable to determine VM power state from current status.")
+        self.module.fail_json(msg="Unable to determine {0} power state from current status.".format(self.guest_label))
 
     @staticmethod
     def is_powerstate_action_needed(action, current):
@@ -114,7 +135,7 @@ class ProxmoxPower(ProxmoxBase):
             A pair containing the task UPID, or None for a synchronous action,
             and the verified final power state.
         """
-        operation = "resume" if action == "start" and current == "paused" else action
+        operation = "resume" if self.guest_type == "qemu" and action == "start" and current == "paused" else action
         return self.set_state(operation)
 
     def validate_policy(self, state, policy):
@@ -148,7 +169,7 @@ class ProxmoxPower(ProxmoxBase):
             operation: Description of the operation requiring a known status.
         """
         if status is None:
-            self.module.fail_json(msg="Unable to verify VM power state; refusing to {0}.".format(operation))
+            self.module.fail_json(msg="Unable to verify {0} power state; refusing to {1}.".format(self.guest_label, operation))
 
     def require_stopped(self, status, operation):
         """Guard operations that cannot be performed on a powered-on VM.
@@ -160,11 +181,11 @@ class ProxmoxPower(ProxmoxBase):
         if status == "stopped":
             return
         if operation == "delete":
-            self.require_known(status, "delete the VM")
-            self.module.fail_json(msg="VM is {0}; power it off before deleting it.".format(status))
+            self.require_known(status, "delete the {0}".format(self.guest_label))
+            self.module.fail_json(msg="{0} is {1}; power it off before deleting it.".format(self.guest_label, status))
         else:
-            self.require_known(status, "change VM configuration")
-            self.module.fail_json(msg="VM is {0}; power it off before changing its configuration.".format(status))
+            self.require_known(status, "change {0} configuration".format(self.guest_label))
+            self.module.fail_json(msg="{0} is {1}; power it off before changing its configuration.".format(self.guest_label, status))
 
     def validate_update(self, status, policy):
         """Check whether configuration changes are safe under a power policy.
@@ -174,7 +195,7 @@ class ProxmoxPower(ProxmoxBase):
             policy: Requested power-cycle policy.
         """
         if status != "stopped":
-            self.require_known(status, "change VM configuration")
+            self.require_known(status, "change {0} configuration".format(self.guest_label))
             if policy == "fail":
                 self.require_stopped(status, "update")
 
@@ -188,7 +209,7 @@ class ProxmoxPower(ProxmoxBase):
         if policy == "fail":
             self.require_stopped(status, "delete")
         else:
-            self.require_known(status, "delete the VM")
+            self.require_known(status, "delete the {0}".format(self.guest_label))
 
     def needs_change(self, status, policy):
         """Determine whether an on/off policy requires a power transition.
@@ -202,7 +223,7 @@ class ProxmoxPower(ProxmoxBase):
         """
         if policy not in ("on", "off"):
             return False
-        self.require_known(status, "change VM power state")
+        self.require_known(status, "change {0} power state".format(self.guest_label))
         return (policy == "on" and status != "running") or (policy == "off" and status != "stopped")
 
     @staticmethod
@@ -217,9 +238,7 @@ class ProxmoxPower(ProxmoxBase):
         Returns:
             Whether the policy requires stopping the VM before proceeding.
         """
-        return policy in ("on", "off") and status != "stopped" and (
-            has_updates or policy == "off" or status != "running"
-        )
+        return policy in ("on", "off") and status != "stopped" and (has_updates or policy == "off" or status != "running")
 
     @staticmethod
     def should_start(status, policy):
@@ -246,23 +265,23 @@ class ProxmoxPower(ProxmoxBase):
         Raises:
             ValueError: If action is not a supported power operation.
         """
-        vmid = self.module.params["vmid"]
-        node = self.node()
+        if self.guest_type == "lxc" and action not in self.LXC_POWER_ACTIONS:
+            self.module.fail_json(msg="Unsupported LXC container power operation: {0}.".format(action))
         if action not in self.POWER_STATES:
             raise ValueError("Unsupported VM power operation: {0}".format(action))
+        vmid = self.module.params["vmid"]
+        node = self.node()
         endpoint = "suspend" if action in ("pause", "hibernate") else action
         options = {"todisk": 1} if action == "hibernate" else {}
-        result = self.call_api(
-            "{0} VM {1} on node {2}".format(action.capitalize(), vmid, node),
-            getattr(self.vm_resource().status, endpoint).post,
-            **options
+        result = self.call_mutation(
+            "{0} {1} {2} on node {3}".format(action.capitalize(), self.guest_label, vmid, node), getattr(self.vm_resource().status, endpoint).post, **options
         )
         if not isinstance(result, str) or not result.startswith("UPID:"):
-            self.module.fail_json(msg="VM {0} did not return a task UPID.".format(action))
+            self.client.fail_request("{0} {1} did not return a task UPID.".format(self.guest_label, action))
         task = ProxmoxTask(self.module, client=self.client)
-        task.wait_for_task(result)
+        task.wait_for_task(result, include_log_on_failure=True)
         status = self.get_powerstate()
         expected = self.POWER_STATES[action]
         if status != expected:
-            self.module.fail_json(msg="VM {0} did not reach the {1} state.".format(vmid, expected))
+            self.client.fail_request("{0} {1} did not reach the {2} state.".format(self.guest_label, vmid, expected))
         return result, expected

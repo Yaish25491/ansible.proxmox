@@ -73,7 +73,15 @@ class ProxmoxTask(ProxmoxBase):
             status = self.call_api("Retrieving Proxmox task status", endpoint.get)
 
         exit_status = status.get("exitstatus")
-        if exit_status and exit_status != "OK":
+        if isinstance(exit_status, str) and exit_status.startswith("WARNINGS:"):
+            task_log = self._read_task_log(task_endpoint)
+            warning_lines = [line[len("WARN:") :].strip() for line in task_log if line.startswith("WARN:")]
+            if warning_lines:
+                for warning in warning_lines:
+                    self.module.warn(warning)
+            else:
+                self.module.warn("Proxmox task completed with warnings: {0}".format(exit_status))
+        elif exit_status and exit_status != "OK":
             failure = {"msg": "Proxmox task failed", "task": upid, "task_exit_status": exit_status}
             if include_log_on_failure:
                 task_log = self._read_task_log(task_endpoint)

@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import ProxmoxClient
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPower
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_task import ProxmoxTask
 
@@ -29,7 +30,24 @@ def make_power(**params):
         fail_json=Mock(side_effect=RuntimeError("module failed")),
     )
     api = Mock()
-    return ProxmoxPower(module, client=SimpleNamespace(api=api)), api
+    client = ProxmoxClient(module)
+    client._api = api
+    return ProxmoxPower(module, client=client), api
+
+
+def test_lxc_power_waits_and_verifies_the_lxc_endpoint():
+    """Use shared task waiting and state verification for LXC guests."""
+    existing, api = make_power()
+    power = ProxmoxPower(existing.module, client=existing.client, guest_type="lxc")
+    container = api.nodes.return_value.lxc.return_value
+    container.status.start.post.return_value = "UPID:pve01:start"
+    container.status.current.get.return_value = {"status": "running"}
+    api.nodes.return_value.tasks.return_value.status.get.return_value = {"status": "stopped", "exitstatus": "OK"}
+
+    assert power.set_state("start") == ("UPID:pve01:start", "running")
+    container.status.start.post.assert_called_once_with()
+    api.nodes.return_value.tasks.assert_called_once_with("UPID:pve01:start")
+    api.nodes.return_value.qemu.assert_not_called()
 
 
 def test_get_status_uses_current_qemu_endpoint():
@@ -235,7 +253,7 @@ def test_set_state_waits_for_upid_and_verifies_status(action, expected, timeout,
 
     assert power.set_state(action) == ("UPID:pve01:{0}".format(action), expected)
 
-    wait.assert_called_once_with("UPID:pve01:{0}".format(action))
+    wait.assert_called_once_with("UPID:pve01:{0}".format(action), include_log_on_failure=True)
     qemu.status.current.get.assert_called_once_with()
 
 
@@ -273,7 +291,7 @@ def test_set_state_requires_successful_upid_and_expected_status(action, endpoint
     qemu.status.current.get.return_value = wrong_status
     with pytest.raises(RuntimeError, match="module failed"):
         power.set_state(action)
-    wait.assert_called_once_with(post.return_value)
+    wait.assert_called_once_with(post.return_value, include_log_on_failure=True)
     assert "did not reach" in power.module.fail_json.call_args.kwargs["msg"]
 
 
@@ -429,4 +447,4 @@ def test_set_state_power_actions(action, endpoint, options, status, monkeypatch)
 
     assert power.set_state(action) == (upid, ProxmoxPower.POWER_STATES[action])
     getattr(qemu.status, endpoint).post.assert_called_once_with(**options)
-    wait.assert_called_once_with(upid)
+    wait.assert_called_once_with(upid, include_log_on_failure=True)

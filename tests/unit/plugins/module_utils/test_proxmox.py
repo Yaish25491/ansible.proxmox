@@ -35,6 +35,10 @@ class FakeModule:
     def __init__(self, params=None, check_mode=False):
         self.params = params or {}
         self.check_mode = check_mode
+        self.warnings = []
+
+    def warn(self, warning):
+        self.warnings.append(warning)
 
     def exit_json(self, **kwargs):
         raise ExitJson(kwargs)
@@ -618,6 +622,33 @@ def test_serialize_formatted_entries_rejects_duplicate_names():
     assert failure.value.result["msg"] == "Duplicate formatted API parameter net0."
 
 
+def test_formatted_helpers_support_separate_entry_identifiers():
+    resource = DummyResource(FakeModule(), current=None)
+    parameters = {"network": [{"device": "net0", "name": "eth0", "firewall": True}]}
+    entry_name_fields = {"network": "device"}
+
+    assert resource.serialize_formatted_parameters(
+        parameters,
+        ["network"],
+        {"network": "net"},
+        entry_name_fields=entry_name_fields,
+    ) == {"net0": "name=eth0,firewall=1"}
+    assert resource.get_formatted_parameter_updates(
+        {"net0": "name=eth0,bridge=vmbr0,ip=dhcp"},
+        parameters,
+        ["network"],
+        {"network": "net"},
+        entry_name_fields=entry_name_fields,
+    ) == {"net0": "name=eth0,bridge=vmbr0,ip=dhcp,firewall=1"}
+    assert resource.get_formatted_parameter_updates(
+        {"net0": "name=eth0,bridge=vmbr0"},
+        {"network": []},
+        ["network"],
+        {"network": "net"},
+        entry_name_fields=entry_name_fields,
+    ) == {"delete": "net0"}
+
+
 def test_merge_formatted_deletions_preserves_order_and_existing_updates():
     updates = {"net0": "virtio", "delete": "scsi0,net1"}
     deletions = ["net1", "net2", "net2", "net3"]
@@ -915,6 +946,49 @@ def test_wait_for_task_returns_successful_status(monkeypatch):
     assert result["exitstatus"] == "OK"
 
 
+@pytest.mark.parametrize("log_available", [False, True])
+def test_wait_for_task_reports_warning_exit_status_as_module_warning(log_available):
+    api = Mock()
+    task_endpoint = api.nodes.return_value.tasks.return_value
+    task_endpoint.status.get.return_value = {"status": "stopped", "exitstatus": "WARNINGS: 1"}
+    if log_available:
+        task_endpoint.log.get.return_value = [
+            {"t": "WARN: Systemd 259 detected. You may need to enable nesting."},
+            {"t": "TASK WARNINGS: 1"},
+        ]
+    else:
+        task_endpoint.log.get.side_effect = RuntimeError("task log unavailable")
+    module = FakeModule()
+    task = DummyTaskModule(module, client=FakeClient(api))
+
+    result = task.wait_for_task("UPID:pve01:00000001:00000002:task", timeout=10)
+
+    assert result["exitstatus"] == "WARNINGS: 1"
+    if log_available:
+        assert module.warnings == ["Systemd 259 detected. You may need to enable nesting."]
+    else:
+        assert module.warnings == ["Proxmox task completed with warnings: WARNINGS: 1"]
+    task_endpoint.log.get.assert_called_once_with(limit=50)
+
+
+def test_wait_for_task_uses_warning_exit_status_when_log_contains_error():
+    api = Mock()
+    task_endpoint = api.nodes.return_value.tasks.return_value
+    task_endpoint.status.get.return_value = {"status": "stopped", "exitstatus": "WARNINGS: 1"}
+    task_endpoint.log.get.return_value = [
+        {"t": "WARN: Systemd 259 detected. You may need to enable nesting."},
+        {"t": "TASK ERROR: unrelated log entry"},
+        {"t": "TASK WARNINGS: 1"},
+    ]
+    module = FakeModule()
+    task = DummyTaskModule(module, client=FakeClient(api))
+
+    result = task.wait_for_task("UPID:pve01:00000001:00000002:task", timeout=10)
+
+    assert result["exitstatus"] == "WARNINGS: 1"
+    assert module.warnings == ["Systemd 259 detected. You may need to enable nesting."]
+
+
 def test_wait_for_task_zero_timeout_waits_until_task_finishes(monkeypatch):
     statuses = [
         {"status": "running"},
@@ -946,11 +1020,13 @@ def test_wait_for_task_includes_log_on_failure():
     task_endpoint = api.nodes.return_value.tasks.return_value
     task_endpoint.status.get.return_value = {"status": "stopped", "exitstatus": "migration aborted"}
     task_endpoint.log.get.return_value = [
+        {"n": 0, "t": "WARN: an unrelated warning"},
         {"n": 0, "t": "Starting migration"},
         {"n": 1, "t": "can't migrate local disk: non-migratable snapshot exists"},
         {"n": 2, "t": "TASK ERROR: migration aborted"},
     ]
-    task = DummyTaskModule(FakeModule(), client=FakeClient(api))
+    module = FakeModule()
+    task = DummyTaskModule(module, client=FakeClient(api))
 
     with pytest.raises(FailJson) as failure:
         task.wait_for_task(
@@ -962,11 +1038,13 @@ def test_wait_for_task_includes_log_on_failure():
     result = failure.value.result
     assert result["task_exit_status"] == "migration aborted"
     assert result["task_log"] == [
+        "WARN: an unrelated warning",
         "Starting migration",
         "can't migrate local disk: non-migratable snapshot exists",
         "TASK ERROR: migration aborted",
     ]
     assert "non-migratable snapshot exists" in result["msg"]
+    assert module.warnings == []
     task_endpoint.log.get.assert_called_once_with(limit=50)
 
 

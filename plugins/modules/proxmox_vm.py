@@ -271,9 +271,7 @@ from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import (
     proxmox_required_together,
     proxmox_resource_argument_spec,
 )
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_power import ProxmoxPower
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_resource import ProxmoxResourceModule
-from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_task import ProxmoxTask
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_guest import ProxmoxGuestModule
 
 
 FORMATTED_PARAMETERS = ["network", "ide2"]
@@ -299,15 +297,8 @@ VM_PARAMETER_DEFAULT = {
 }
 
 
-class ProxmoxVmModule(ProxmoxResourceModule):
+class ProxmoxVmModule(ProxmoxGuestModule):
     result_key = "vm"
-
-    @property
-    def power(self):
-        return ProxmoxPower(self.module, client=self.client)
-
-    def _vm(self):
-        return self.power.vm_resource()
 
     def _validate_efidisk_parameters(self):
         if self.module.params.get("state", "present") != "present":
@@ -318,107 +309,15 @@ class ProxmoxVmModule(ProxmoxResourceModule):
         if not isinstance(efidisk, dict) or not efidisk.get("storage"):
             self.module.fail_json(msg="bios is ovmf but all of the following are missing: efidisk")
 
-    def execute_resource_module(self):
-        """Validate the request and reconcile the VM and its power policy."""
-        state, power_cycle = self._validated_request()
-        resource = self.get_resource()
-        if state == "absent":
-            self._execute_vm_deletion(resource, power_cycle)
-            return
-        self._execute_vm_present(resource, power_cycle)
-
     def _validated_request(self):
         """Validate VM identifier, power policy, and creation-only options.
 
         Returns:
             Requested VM state and power-cycle policy, in that order.
         """
-        vmid = self.module.params.get("vmid")
-        if vmid is not None and not 100 <= vmid <= 999999999:
-            self.module.fail_json(msg="VMID must be between 100 and 999999999.")
-        state = self.module.params.get("state", "present")
-        power_cycle = self.module.params.get("power_cycle", "fail")
-        self.power.validate_policy(state, power_cycle)
+        state, power_cycle = super()._validated_request()
         self._validate_efidisk_parameters()
         return state, power_cycle
-
-    def _execute_vm_deletion(self, resource, power_cycle):
-        """Delete a VM, stopping it first only when the requested policy allows.
-
-        Args:
-            resource: Current VM configuration, or None when the VM is absent.
-            power_cycle: Requested power-cycle policy.
-        """
-        if resource is None:
-            self.exit(changed=False, resource=None)
-        self.power.validate_delete(self._vm_status, power_cycle)
-        if self.module.check_mode:
-            self.exit(changed=True, resource=self.get_check_mode_resource("delete", resource=resource))
-        if self.power.should_stop(self._vm_status, power_cycle, False):
-            self._apply_power_state("stop")
-        self.exit(changed=True, resource=self.delete_resource(resource))
-
-    def _execute_vm_present(self, resource, power_cycle):
-        """Create a missing VM or reconcile an existing one.
-
-        Args:
-            resource: Current VM configuration, or None when the VM is absent.
-            power_cycle: Requested power-cycle policy.
-        """
-        if resource is None:
-            self._create_vm_for_policy(power_cycle)
-            return
-        self._update_vm_for_policy(resource, power_cycle)
-
-    def _create_vm_for_policy(self, power_cycle):
-        """Create a VM and apply its requested initial power state.
-
-        Args:
-            power_cycle: Requested power-cycle policy.
-        """
-        if self.module.check_mode:
-            self.exit(changed=True, resource=self.get_check_mode_resource("create"))
-        resource = self.create_resource()
-        if self.power.should_start("stopped", power_cycle):
-            self._apply_power_state("start")
-        self.exit(changed=True, resource=resource)
-
-    def _update_vm_for_policy(self, resource, power_cycle):
-        """Reconcile existing VM configuration and requested power state.
-
-        Args:
-            resource: Current VM configuration.
-            power_cycle: Requested power-cycle policy.
-        """
-        updates = self.get_update_parameters(resource)
-        power_change = self.power.needs_change(self._vm_status, power_cycle)
-        if not updates and not power_change:
-            self.exit(changed=False, resource=resource)
-        if self.module.check_mode:
-            self.exit(
-                changed=True,
-                resource=self.get_check_mode_resource("update", resource=resource, updates=updates),
-            )
-        self._apply_existing_vm_updates(resource, updates, power_cycle)
-
-    def _apply_existing_vm_updates(self, resource, updates, power_cycle):
-        """Stop, update, and start an existing VM as requested.
-
-        Args:
-            resource: Current VM configuration.
-            updates: Configuration changes to apply.
-            power_cycle: Requested power-cycle policy.
-        """
-        if self.power.should_stop(self._vm_status, power_cycle, bool(updates)):
-            self._apply_power_state("stop")
-        if updates:
-            resource = self.update_resource(resource, updates)
-        if self.power.should_start(self._vm_status, power_cycle):
-            self._apply_power_state("start")
-        self.exit(changed=True, resource=resource)
-
-    def _apply_power_state(self, action):
-        self._task_upid, self._vm_status = self.power.set_state(action)
 
     def get_resource(self):
         node = self.module.params["node"]
@@ -443,7 +342,7 @@ class ProxmoxVmModule(ProxmoxResourceModule):
         config_options = self.power.configuration_options(self.module.params.get("power_cycle", "fail"))
         return self.call_api(
             "Retrieving VM {0} configuration from node {1}".format(vmid, node),
-            self._vm().config.get,
+            self._guest().config.get,
             **config_options
         )
 
@@ -527,31 +426,26 @@ class ProxmoxVmModule(ProxmoxResourceModule):
             parameters[device] = "{0}:{1}".format(disk["storage"], size)
         return parameters
 
-    def _wait_for_task(self, result):
-        """Record and wait for an asynchronous result using shared task options.
+    def prepare_result(self, changed, resource=None, **values):
+        """Include the QEMU default machine before shared guest result shaping.
 
         Args:
-            result: API response containing a task UPID, or a synchronous result.
-        """
-        self._task_upid = None
-        if not isinstance(result, str) or not result.startswith("UPID:"):
-            return
-        self._task_upid = result
-        task = ProxmoxTask(self.module, client=self.client)
-        task.wait_for_task(result)
+            changed: Whether the VM changed or would change.
+            resource: Current or predicted VM configuration.
+            **values: Additional result fields.
 
-    def prepare_result(self, changed, resource=None, **values):
-        vm = dict(resource or {})
-        if resource is not None:
-            vm.setdefault("machine", "i440fx")
-        vm["vmid"] = str(self.module.params["vmid"])
-        result = super().prepare_result(changed, resource=vm, **values)
-        task_upid = getattr(self, "_task_upid", None)
-        if task_upid is not None:
-            result["task_upid"] = task_upid
-        return result
+        Returns:
+            The prepared VM result mapping.
+        """
+        resource = {"machine": "i440fx", **resource} if resource is not None else None
+        return super().prepare_result(changed, resource=resource, **values)
 
     def create_resource(self):
+        """Validate QEMU-specific storage before shared guest creation.
+
+        Returns:
+            The newly created VM configuration.
+        """
         self._validate_machine_version()
         parameters = self._creation_parameters()
         node = self.module.params["node"]
@@ -565,17 +459,7 @@ class ProxmoxVmModule(ProxmoxResourceModule):
             )
         if self.module.params.get("bios") == "ovmf":
             self._validate_efi_storage()
-        resource = self.call_api(
-            "Creating VM {0} on node {1}".format(self.module.params["vmid"], self.module.params["node"]),
-            self.api.nodes(self.module.params["node"]).qemu.create,
-            **parameters
-        )
-        self._wait_for_task(resource)
-        return self.call_api(
-            "Retrieving created VM {0} configuration on node {1}".format(self.module.params["vmid"], node),
-            self._vm().config.get,
-            current=1,
-        )
+        return self._create_guest(parameters)
 
     def _efidisk_parameter(self):
         efidisk = self.module.params["efidisk"]
@@ -647,33 +531,9 @@ class ProxmoxVmModule(ProxmoxResourceModule):
             self._validate_machine_version()
         return updates
 
-    def update_resource(self, resource, updates):
-        result = self.call_api(
-            "Updating VM {0} on node {1}".format(self.module.params["vmid"], self.module.params["node"]),
-            self._vm().config.post,
-            **updates
-        )
-        self._wait_for_task(result)
-        return self.apply_parameter_updates(resource, updates)
-
-    def delete_resource(self, resource):
-        self.power.require_stopped(getattr(self, "_vm_status", None), "delete")
-        result = self.call_api(
-            "Deleting VM {0} from node {1}".format(self.module.params["vmid"], self.module.params["node"]),
-            self._vm().delete,
-        )
-        self._wait_for_task(result)
-        return None
-
-    def get_check_mode_resource(self, operation, resource=None, updates=None):
-        if operation == "create":
-            return self._creation_parameters()
-        if operation == "delete" and resource is not None:
-            self.power.validate_delete(getattr(self, "_vm_status", None), self.module.params.get("power_cycle", "fail"))
-        return super().get_check_mode_resource(operation, resource, updates)
-
 
 def main():
+    """Parse module arguments and reconcile the selected QEMU guest."""
     module = AnsibleModule(
         argument_spec=proxmox_resource_argument_spec(
             {
