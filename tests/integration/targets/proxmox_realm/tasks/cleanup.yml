@@ -1,0 +1,26 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Attempt removal of every owned realm even after individual errors
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ item.realm }}'
+    state: absent
+  loop: '{{ realm_test_fixtures }}'
+  register: realm_cleanup_results
+  failed_when: false
+- name: Independently inspect each owned realm after all cleanup attempts
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ item.realm }}'
+  loop: '{{ realm_test_fixtures }}'
+  register: realm_cleanup_verify
+  failed_when: false
+- name: Require independent removal verification for every owned realm
+  ansible.builtin.assert:
+    that:
+      - item.realms is defined
+      - item.realms == []
+    fail_msg: Owned realm cleanup could not be verified; inspect the preceding cleanup results.
+  loop: '{{ realm_cleanup_verify.results }}'
+  loop_control:
+    label: '{{ item.item.realm }}'

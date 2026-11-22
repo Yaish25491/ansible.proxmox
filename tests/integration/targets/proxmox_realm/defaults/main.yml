@@ -1,0 +1,25 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+realm_test_prefix: ansible-realm-{{ integration_resource_ids | join('') }}
+# Enable only when the server has libpve-access-control >= 9.1.1.
+realm_test_audiences_supported: false
+realm_test_fixtures:
+  - realm: '{{ realm_test_prefix }}-ldap'
+    type: ldap
+    server1: ldap.example.invalid
+    base_dn: dc=example,dc=invalid
+    user_attr: uid
+    password: EXAMPLE-disconnected-fixture
+    sync_defaults_options: scope=users,enable-new=0
+  - realm: '{{ realm_test_prefix }}-ad'
+    type: ad
+    server1: ad.example.invalid
+    domain: example.invalid
+    password: EXAMPLE-disconnected-fixture
+    sync_defaults_options: scope=users,enable-new=0
+  - realm: '{{ realm_test_prefix }}-oidc'
+    type: openid
+    issuer_url: https://openid.example.invalid
+    client_id: ansible-realm-test

@@ -216,3 +216,27 @@ populated omission, explicit empty sets, list-all and selected information reads
 in check mode, reserved role identifiers, and built-in update/deletion protection
 with independent verification that built-in privileges remain unchanged.
 Run only with explicit authorization to create and remove these test identities.
+
+## Authentication realm integration tests
+
+The `proxmox_realm` target tests configuration lifecycle together with
+`proxmox_realm_info`. Run `ansible-test integration proxmox_realm` using the
+shared private integration configuration, only with authorization to create
+and remove temporary realm configurations. It preflights three unique realm
+identifiers, then exercises LDAP, AD and OpenID creation, reconciliation,
+omission, explicit removal, idempotency, digest updates, check mode and deletion.
+Cleanup attempts every owned realm and independently verifies removal.
+
+The fixtures use reserved `.invalid` provider addresses and never request a
+connection check, start synchronization, create identities or change the login
+default. These tests validate stored configuration, not external provider
+connectivity or successful user authentication. Actual LDAP/AD/OpenID behavior
+requires separate provider fixtures. Built-in and controller authentication
+realms are protected; default-realm side effects are covered by unit tests.
+
+Provider tests verify LDAP/AD transport, fallback servers, boolean defaults,
+and OpenID claim/group/userinfo settings with independent reads. Bind passwords
+and client keys are dummy values for disconnected owned fixtures, and secret
+fields are excluded from results. Additional OpenID audience tests require
+`libpve-access-control >= 9.1.1`; enable them explicitly with
+`realm_test_audiences_supported: true` only on a compatible server.

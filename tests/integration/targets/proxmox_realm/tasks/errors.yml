@@ -1,0 +1,43 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read realm summaries without changing state
+  ansible.proxmox.proxmox_realm_info:
+  register: realm_summaries
+  no_log: true
+- name: Read summaries again in check mode
+  ansible.proxmox.proxmox_realm_info:
+  check_mode: true
+  register: realm_summaries_check
+  no_log: true
+- name: Verify read-only summary behavior
+  ansible.builtin.assert:
+    that:
+      - realm_summaries is not changed
+      - realm_summaries_check is not changed
+      - realm_summaries.realms | selectattr('realm', 'equalto', 'pve') | list | length == 1
+      - realm_summaries_check.realms | selectattr('realm', 'equalto', 'pam') | list | length == 1
+  no_log: true
+- name: Reject management of a built-in realm
+  ansible.proxmox.proxmox_realm:
+    realm: pve
+    state: absent
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: realm_protected_errors
+  failed_when: false
+- name: Verify both builtin requests were rejected
+  ansible.builtin.assert:
+    that:
+      - realm_protected_errors.results | map(attribute='msg') | select('search', 'cannot be managed') | list | length == 2
+- name: Reject creation without a provider type
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_test_fixtures[0].realm }}'
+  check_mode: true
+  register: realm_missing_type
+  failed_when: false
+- name: Verify useful creation validation
+  ansible.builtin.assert:
+    that:
+      - "'type is required' in realm_missing_type.msg"

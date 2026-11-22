@@ -22,6 +22,8 @@ action_groups:
     - proxmox_node_time
     - proxmox_pool
     - proxmox_pool_info
+    - proxmox_realm
+    - proxmox_realm_info
     - proxmox_role
     - proxmox_role_info
     - proxmox_user
