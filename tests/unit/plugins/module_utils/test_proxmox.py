@@ -1067,3 +1067,17 @@ def test_wait_for_task_log_read_failure_does_not_mask_task_failure():
     assert failure.value.result["msg"] == "Proxmox task failed"
     assert failure.value.result["task_exit_status"] == "migration aborted"
     assert "task_log" not in failure.value.result
+
+
+@pytest.mark.parametrize("api_user", [None, "ops!team@pve"])
+def test_full_token_identifier_preserves_exclamation_in_owner(api_user):
+    module = FakeModule(connection_params(
+        api_user=api_user,
+        api_password=None,
+        api_token_id="ops!team@pve!automation",
+        api_token_secret="EXAMPLE-secret",
+    ))
+    options = proxmox.ProxmoxClient(module).connection_options()
+    assert options["user"] == "ops!team@pve"
+    assert options["token_name"] == "automation"
+    assert options["token_value"] == "EXAMPLE-secret"

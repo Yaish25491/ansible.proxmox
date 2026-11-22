@@ -1,0 +1,66 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership
+  ansible.builtin.set_fact:
+    acl_cleanup_allowed: false
+- name: Exercise ACL lifecycle and independent information
+  module_defaults:
+    group/ansible.proxmox.proxmox: &id001
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_acl_fixture: *id001
+  block:
+    - name: Verify the fixture user is absent
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ acl_test_user }}'
+      register: acl_user_before
+    - name: Verify no stale ACL belongs to the fixture identifier
+      ansible.proxmox.proxmox_acl_info:
+        subject_type: user
+        subject: '{{ acl_test_user }}'
+      register: acl_before
+    - name: Require unused user and ACL identifiers
+      ansible.builtin.assert:
+        that:
+          - acl_user_before.users | length == 0
+          - acl_before.acls | length == 0
+    - name: Preflight the group fixture through the public reader
+      ansible.proxmox.proxmox_group_info:
+        groupid: '{{ acl_test_group }}'
+      register: acl_group_before
+    - name: Preflight group and token ACL identifiers
+      ansible.proxmox.proxmox_acl_info:
+        subject: '{{ item }}'
+      loop: '{{ [acl_test_group, acl_test_user ~ ''!'' ~ acl_test_token] }}'
+      register: acl_support_bindings
+    - name: Refuse existing supporting fixtures or stale bindings
+      ansible.builtin.assert:
+        that:
+          - acl_group_before.groups == []
+          - acl_support_bindings.results | map(attribute='acls') | flatten | length == 0
+    - name: Claim only the verified absent fixture
+      ansible.builtin.set_fact:
+        acl_cleanup_allowed: true
+    - name: Create the owned disabled passwordless user
+      ansible.proxmox.proxmox_user:
+        userid: '{{ acl_test_user }}'
+        enable: false
+        comment: Owned ACL integration fixture
+    - name: Exercise binding lifecycle and independent reads
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise group and token ACL subjects
+      ansible.builtin.include_tasks: subjects.yml
+    - name: Exercise rejected requests without unrelated changes
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Clean and independently verify owned resources
+      ansible.builtin.include_tasks: cleanup.yml
+      when: acl_cleanup_allowed | default(false)

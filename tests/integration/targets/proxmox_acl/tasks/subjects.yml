@@ -1,0 +1,19 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Create the owned group fixture through the public lifecycle module
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ acl_test_group }}'
+    comment: Owned ACL integration fixture
+- name: Create the owned token fixture
+  proxmox_acl_fixture:
+    resource_id: '{{ acl_test_token }}'
+    owned_ids: '{{ [acl_test_token] }}'
+    userid: '{{ acl_test_user }}'
+  no_log: true
+- name: Exercise each independently provisioned subject
+  ansible.builtin.include_tasks: subject_lifecycle.yml
+  loop: '{{ [{''type'': ''group'', ''id'': acl_test_group}, {''type'': ''token'', ''id'': acl_test_user ~ ''!'' ~ acl_test_token}] }}'
+  loop_control:
+    loop_var: acl_subject

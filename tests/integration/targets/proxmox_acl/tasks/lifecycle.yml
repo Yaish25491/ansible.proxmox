@@ -1,0 +1,215 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict binding creation
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  check_mode: true
+  register: acl_create_prediction
+- name: Read after creation prediction
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_after_prediction
+- name: Verify prediction did not write
+  ansible.builtin.assert:
+    that:
+      - acl_create_prediction is changed
+      - acl_create_prediction.acl.propagate
+      - acl_after_prediction.acls | length == 0
+- name: Create a neighboring role binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: NoAccess
+    propagate: false
+  register: acl_neighbor
+- name: Create the primary binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_created
+- name: Independently read both bindings
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_actual
+- name: Verify both independent binding values
+  ansible.builtin.assert:
+    that:
+      - acl_created is changed
+      - acl_created.acl.propagate
+      - acl_actual.acls | length == 2
+      - acl_actual.acls | selectattr('roleid', 'equalto', 'PVEAuditor') | map(attribute='propagate') | list == [true]
+      - acl_actual.acls | selectattr('roleid', 'equalto', 'NoAccess') | map(attribute='propagate') | list == [false]
+- name: Repeat creation with normalized path
+  ansible.proxmox.proxmox_acl:
+    path: //vms//
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_repeat
+- name: Verify equivalent path is a no-op
+  ansible.builtin.assert:
+    that:
+      - acl_repeat is not changed
+- name: Predict propagation removal
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    propagate: false
+  check_mode: true
+  register: acl_update_prediction
+- name: Read primary binding after update prediction
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_unchanged
+- name: Verify update prediction and unchanged actual state
+  ansible.builtin.assert:
+    that:
+      - acl_update_prediction is changed
+      - not acl_update_prediction.acl.propagate
+      - acl_unchanged.acls[0].propagate
+- name: Disable propagation on the primary binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    propagate: false
+  register: acl_updated
+- name: Read the updated binding independently
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_updated_actual
+- name: Verify actual propagation update
+  ansible.builtin.assert:
+    that:
+      - acl_updated is changed
+      - not acl_updated_actual.acls[0].propagate
+- name: Repeat explicit propagation
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    propagate: false
+  register: acl_update_repeat
+- name: Preserve propagation when omitted
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_omitted
+- name: Predict an already matching binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  check_mode: true
+  register: acl_check_noop
+- name: Verify repeated and omitted updates are no-ops
+  ansible.builtin.assert:
+    that:
+      - acl_update_repeat is not changed
+      - acl_omitted is not changed
+      - acl_check_noop is not changed
+- name: Read filtered bindings in check mode
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    path: /vms
+    role: PVEAuditor
+  check_mode: true
+  register: acl_info_check
+- name: Verify read-only check mode
+  ansible.builtin.assert:
+    that:
+      - acl_info_check is not changed
+      - acl_info_check.acls | length == 1
+- name: Read all visible bindings
+  ansible.proxmox.proxmox_acl_info: {}
+  register: acl_all
+  no_log: true
+- name: Verify list-all contains the owned binding
+  ansible.builtin.assert:
+    that:
+      - acl_all.acls | selectattr('ugid', 'equalto', acl_test_user) | list | length == 2
+- name: Read all visible bindings in check mode
+  ansible.proxmox.proxmox_acl_info: {}
+  check_mode: true
+  register: acl_all_check
+  no_log: true
+- name: Verify list-all check mode returns owned bindings without writing
+  ansible.builtin.assert:
+    that:
+      - acl_all_check is not changed
+      - acl_all_check.acls | selectattr('ugid', 'equalto', acl_test_user) | list | length == 2
+- name: Predict primary deletion
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    state: absent
+  check_mode: true
+  register: acl_delete_prediction
+- name: Read after deletion prediction
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  register: acl_still_present
+- name: Verify deletion prediction preserves actual binding
+  ansible.builtin.assert:
+    that:
+      - acl_delete_prediction is changed
+      - acl_delete_prediction.acl == none
+      - acl_still_present.acls | length == 1
+- name: Delete only the primary binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    state: absent
+  register: acl_deleted
+- name: Independently verify neighbor preservation
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_neighbor_actual
+- name: Verify selected removal and surviving neighbor
+  ansible.builtin.assert:
+    that:
+      - acl_deleted is changed
+      - acl_neighbor_actual.acls | length == 1
+      - acl_neighbor_actual.acls[0].roleid == 'NoAccess'
+      - not acl_neighbor_actual.acls[0].propagate
+- name: Repeat primary deletion
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+    state: absent
+  register: acl_delete_repeat
+- name: Verify absent no-op
+  ansible.builtin.assert:
+    that:
+      - acl_delete_repeat is not changed

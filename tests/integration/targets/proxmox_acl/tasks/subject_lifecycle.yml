@@ -1,0 +1,150 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict supporting-subject binding creation
+  ansible.proxmox.proxmox_acl: &id001
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+    propagate: false
+  check_mode: true
+  register: acl_subject_prediction
+- name: Independently verify the prediction did not create a binding
+  ansible.proxmox.proxmox_acl_info: &id002
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+  register: acl_subject_before
+- name: Verify creation prediction without a write
+  ansible.builtin.assert:
+    that:
+      - acl_subject_prediction is changed
+      - acl_subject_before.acls == []
+- name: Create the selected supporting-subject binding
+  ansible.proxmox.proxmox_acl: *id001
+  register: acl_subject_created
+- name: Repeat the selected supporting-subject binding
+  ansible.proxmox.proxmox_acl: *id001
+  register: acl_subject_repeated
+- name: Independently read supporting-subject binding values
+  ansible.proxmox.proxmox_acl_info: *id002
+  register: acl_subject_actual
+- name: Verify type subject role propagation and idempotence
+  ansible.builtin.assert:
+    that:
+      - acl_subject_created is changed
+      - acl_subject_repeated is not changed
+      - acl_subject_actual.acls | length == 1
+      - acl_subject_actual.acls[0].type == acl_subject.type
+      - acl_subject_actual.acls[0].ugid == acl_subject.id
+      - acl_subject_actual.acls[0].roleid == 'PVEAuditor'
+      - not acl_subject_actual.acls[0].propagate
+- name: Predict propagation reconciliation for the supporting subject
+  ansible.proxmox.proxmox_acl: &propagated_binding
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+    propagate: true
+  check_mode: true
+  register: acl_subject_update_prediction
+- name: Independently verify propagation prediction did not write
+  ansible.proxmox.proxmox_acl_info: *id002
+  register: acl_subject_before_update
+- name: Verify predicted propagation and unchanged actual state
+  ansible.builtin.assert:
+    that:
+      - acl_subject_update_prediction is changed
+      - acl_subject_update_prediction.acl.propagate
+      - not acl_subject_before_update.acls[0].propagate
+- name: Reconcile propagation for the supporting subject
+  ansible.proxmox.proxmox_acl: *propagated_binding
+  register: acl_subject_updated
+- name: Repeat the supporting-subject propagation update
+  ansible.proxmox.proxmox_acl: *propagated_binding
+  register: acl_subject_update_repeated
+- name: Preserve supporting-subject propagation when omitted
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+  register: acl_subject_omitted
+- name: Independently read the subject without a type filter in check mode
+  ansible.proxmox.proxmox_acl_info:
+    path: //vms//
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+  check_mode: true
+  register: acl_subject_updated_actual
+- name: Verify update values no-op omission and subject-only filtering
+  ansible.builtin.assert:
+    that:
+      - acl_subject_updated is changed
+      - acl_subject_update_repeated is not changed
+      - acl_subject_omitted is not changed
+      - acl_subject_updated_actual is not changed
+      - acl_subject_updated_actual.acls | length == 1
+      - acl_subject_updated_actual.acls[0].type == acl_subject.type
+      - acl_subject_updated_actual.acls[0].ugid == acl_subject.id
+      - acl_subject_updated_actual.acls[0].propagate
+- name: Independently verify the unrelated user binding is preserved
+  ansible.proxmox.proxmox_acl_info:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_subject_neighbor
+- name: Verify supporting-subject writes preserved the user binding
+  ansible.builtin.assert:
+    that:
+      - acl_subject_neighbor.acls | length == 1
+      - acl_subject_neighbor.acls[0].roleid == 'NoAccess'
+      - not acl_subject_neighbor.acls[0].propagate
+- name: Predict supporting-subject deletion
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+    propagate: false
+    state: absent
+  check_mode: true
+  register: acl_subject_delete_prediction
+- name: Read supporting-subject binding after deletion prediction
+  ansible.proxmox.proxmox_acl_info: *id002
+  register: acl_subject_retained
+- name: Verify selected deletion prediction preserves the actual binding
+  ansible.builtin.assert:
+    that:
+      - acl_subject_delete_prediction is changed
+      - acl_subject_retained.acls | length == 1
+- name: Delete only the selected supporting-subject binding
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+    propagate: false
+    state: absent
+  register: acl_subject_deleted
+- name: Repeat supporting-subject deletion
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: '{{ acl_subject.type }}'
+    subject: '{{ acl_subject.id }}'
+    role: PVEAuditor
+    propagate: false
+    state: absent
+  register: acl_subject_absent
+- name: Independently verify selected supporting-subject removal
+  ansible.proxmox.proxmox_acl_info: *id002
+  register: acl_subject_removed
+- name: Verify selected deletion and repeated no-op
+  ansible.builtin.assert:
+    that:
+      - acl_subject_deleted is changed
+      - acl_subject_absent is not changed
+      - acl_subject_removed.acls == []

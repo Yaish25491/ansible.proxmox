@@ -1,0 +1,27 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject the unsupported path before any mutation or prediction
+  ansible.proxmox.proxmox_acl:
+    path: '{{ acl_invalid_path_case[0] }}'
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: PVEAuditor
+  check_mode: '{{ acl_invalid_path_case[1] }}'
+  register: acl_invalid_path
+  ignore_errors: true
+- name: Independently verify that no owned binding was created at the invalid path
+  ansible.proxmox.proxmox_acl_info:
+    path: '{{ acl_invalid_path_case[0] }}'
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_invalid_path_actual
+- name: Require the same validation failure in normal and check mode
+  ansible.builtin.assert:
+    that:
+      - acl_invalid_path is failed
+      - acl_invalid_path is not changed
+      - "'supported Proxmox VE ACL path' in acl_invalid_path.msg"
+      - acl_invalid_path_actual is not changed
+      - acl_invalid_path_actual.acls == []

@@ -1,0 +1,50 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject a missing role in check mode
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: ansible-missing-{{ integration_resource_ids | join('') }}
+  check_mode: true
+  ignore_errors: true
+  register: acl_bad_role
+- name: Verify role failure without write
+  ansible.builtin.assert:
+    that:
+      - acl_bad_role is failed
+      - acl_bad_role is not changed
+      - '''does not exist'' in acl_bad_role.msg'
+- name: Reject a subject list before any request
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }},root@pam'
+    role: PVEAuditor
+  ignore_errors: true
+  register: acl_bad_subject
+- name: Verify scalar subject validation
+  ansible.builtin.assert:
+    that:
+      - acl_bad_subject is failed
+      - acl_bad_subject is not changed
+      - '''single valid identifier'' in acl_bad_subject.msg'
+- name: Reject unsupported ACL path families in normal and check mode
+  ansible.builtin.include_tasks: invalid_paths.yml
+  loop: >-
+    {{ ['/no_path', '/vms/99', '/nodes/pve01/unknown', '/pool/a/b/c/d',
+        '/sdn/zones/z/v/0', '/storage/local/child'] | product([false, true]) | list }}
+  loop_control:
+    loop_var: acl_invalid_path_case
+- name: Verify the neighbor after rejected requests
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_after_errors
+- name: Verify failed operations preserved configured binding
+  ansible.builtin.assert:
+    that:
+      - acl_after_errors.acls | length == 1
+      - acl_after_errors.acls[0].roleid == 'NoAccess'

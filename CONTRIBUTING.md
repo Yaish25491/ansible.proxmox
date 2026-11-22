@@ -270,3 +270,39 @@ and client keys are dummy values for disconnected owned fixtures, and secret
 fields are excluded from results. Additional OpenID audience tests require
 `libpve-access-control >= 9.1.1`; enable them explicitly with
 `realm_test_audiences_supported: true` only on a compatible server.
+
+## ACL integration tests
+
+Configured ACL entries and effective permissions are distinct APIs: this pair
+manages and reads individual role assignments (`access/acl`), while effective
+permission queries evaluate inherited roles, group membership and token limits
+into privilege flags (`access/permissions`). They share the collection's client,
+authentication and error handling, while keeping their resource-specific logic
+and result models separate. ACA-5629 covers ACL lifecycle; ACA-5631 explicitly
+requires a read-only effective-permission module.
+
+The `proxmox_acl` target tests individual bindings together with
+`proxmox_acl_info`. Run `ansible-test integration proxmox_acl` with the shared
+private integration configuration. It creates a uniquely named disabled,
+passwordless PVE user, group and token. It assigns the built-in `PVEAuditor`
+and `NoAccess` roles only to these owned subjects on `/vms`, and never changes
+the controller's identity.
+Run only with authorization to create/remove these fixtures and ACL entries.
+
+The target checks absence before claiming ownership, then exercises lifecycle,
+propagation, omission, no-ops, check-mode immutability, independent reads and
+rejected requests. Cleanup attempts all owned bindings before the user,
+continues after errors and independently verifies removal. Group fixtures reuse
+the public group lifecycle/info modules. The role-local token helper verifies a
+matching owned identifier, ownership comment and disabled parent before writes;
+token creation secrets are discarded. Supporting ACLs are removed before the
+token/group and parent user, and removal is independently verified. Group and
+token cases also cover propagation reconciliation, omission, subject-only reads
+and preservation of the unrelated user binding. No external identity provider
+or unmerged public role/token module is needed.
+
+The ACL target also verifies unsupported path families fail without changes in
+both normal and check mode, including `/no_path`, while preserving the owned
+neighboring binding. Native ACL deletion still requires existing subjects and
+roles; remove their bindings first. Arbitrary syntactically valid paths remain
+readable and removable to support bindings under obsolete path families.

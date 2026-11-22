@@ -1,0 +1,100 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove supporting-subject bindings before their subjects
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: '{{ item.type }}'
+    subject: '{{ item.id }}'
+    role: PVEAuditor
+    state: absent
+  loop: '{{ [{''type'': ''group'', ''id'': acl_test_group}, {''type'': ''token'', ''id'': acl_test_user ~ ''!'' ~ acl_test_token}] }}'
+  register: acl_support_cleanup
+  ignore_errors: true
+- name: Remove the owned token and continue after errors
+  proxmox_acl_fixture:
+    resource_id: '{{ acl_test_token }}'
+    owned_ids: '{{ [acl_test_token] }}'
+    userid: '{{ acl_test_user }}'
+    state: absent
+  register: acl_token_removed
+  ignore_errors: true
+- name: Remove the owned group through the public lifecycle module
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ acl_test_group }}'
+    state: absent
+  register: acl_group_removed
+  ignore_errors: true
+- name: Independently verify token fixture removal
+  proxmox_acl_fixture:
+    resource_id: '{{ acl_test_token }}'
+    owned_ids: '{{ [acl_test_token] }}'
+    userid: '{{ acl_test_user }}'
+    read_only: true
+  register: acl_token_verified
+  ignore_errors: true
+- name: Independently verify group fixture removal through the public reader
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ acl_test_group }}'
+  register: acl_group_verified
+  ignore_errors: true
+- name: Independently verify no supporting ACL remains
+  ansible.proxmox.proxmox_acl_info:
+    subject: '{{ item }}'
+  loop: '{{ [acl_test_group, acl_test_user ~ ''!'' ~ acl_test_token] }}'
+  register: acl_support_acl_verified
+  ignore_errors: true
+- name: Remove each owned ACL before its subject
+  ansible.proxmox.proxmox_acl:
+    path: /vms
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+    role: '{{ item }}'
+    state: absent
+  loop:
+    - PVEAuditor
+    - NoAccess
+  register: acl_cleanup_bindings
+  ignore_errors: true
+- name: Independently read remaining owned ACL bindings
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_cleanup_actual
+  ignore_errors: true
+- name: Remove only the owned user
+  ansible.proxmox.proxmox_user:
+    userid: '{{ acl_test_user }}'
+    state: absent
+  register: acl_cleanup_user
+  ignore_errors: true
+- name: Independently verify user removal
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ acl_test_user }}'
+  register: acl_cleanup_user_actual
+  ignore_errors: true
+- name: Independently verify final ACL removal
+  ansible.proxmox.proxmox_acl_info:
+    subject_type: user
+    subject: '{{ acl_test_user }}'
+  register: acl_cleanup_final
+  ignore_errors: true
+- name: Expose any cleanup errors or remaining resources
+  ansible.builtin.assert:
+    that:
+      - acl_cleanup_bindings is succeeded
+      - acl_cleanup_actual is succeeded
+      - acl_cleanup_actual.acls | default([1]) | length == 0
+      - acl_cleanup_user_actual is succeeded
+      - acl_cleanup_user_actual.users | default([1]) | length == 0
+      - acl_cleanup_final is succeeded
+      - acl_cleanup_final.acls | default([1]) | length == 0
+      - acl_token_removed is succeeded
+      - acl_group_removed is succeeded
+      - acl_token_verified is succeeded
+      - acl_token_verified.fixture == none
+      - acl_group_verified is succeeded
+      - acl_group_verified.groups == []
+      - acl_support_acl_verified is succeeded
+      - acl_support_acl_verified.results | map(attribute='acls') | flatten | length == 0
