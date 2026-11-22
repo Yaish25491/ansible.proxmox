@@ -1,0 +1,34 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Query one reference type
+  ansible.proxmox.proxmox_firewall_refs_info:
+    scope: '{{ firewall_ref_scope | default("cluster") }}'
+    node: '{{ firewall_ref_node | default(omit) }}'
+    vmid: '{{ firewall_ref_vmid | default(omit) }}'
+    type: '{{ firewall_reference_case.0.kind }}'
+  check_mode: '{{ firewall_reference_case.1 }}'
+  register: firewall_ref_filtered
+  no_log: true
+- name: Verify type filtering against an owned nonempty fixture
+  ansible.builtin.assert:
+    that:
+      - firewall_ref_filtered is not changed
+      - firewall_ref_filtered.references | rejectattr('type', 'equalto', firewall_reference_case.0.kind) | list | length == 0
+      - firewall_ref_filtered.references | selectattr('name', 'equalto', firewall_reference_case.0.id) | selectattr('scope', 'equalto', 'dc') | list | length
+        == 1
+  no_log: true
+- name: Select the owned concrete reference
+  ansible.builtin.set_fact:
+    firewall_ref_actual: '{{ firewall_ref_filtered.references | selectattr(''name'', ''equalto'', firewall_reference_case.0.id) | selectattr(''scope'',
+      ''equalto'', ''dc'') | first }}'
+  no_log: true
+- name: Verify reference spelling comment and presence in the unfiltered result
+  ansible.builtin.assert:
+    that:
+      - firewall_ref_actual.ref == (('+' if firewall_reference_case.0.kind == 'ipset' else '') ~ firewall_reference_case.0.id)
+      - firewall_ref_actual.comment == 'Owned Ansible reference fixture'
+      - firewall_ref_actual in firewall_ref_normal_references
+      - firewall_ref_actual in firewall_ref_check_references
+  no_log: true

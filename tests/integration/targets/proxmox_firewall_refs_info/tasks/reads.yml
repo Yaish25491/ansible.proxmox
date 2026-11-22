@@ -1,0 +1,27 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read populated cluster references
+  ansible.proxmox.proxmox_firewall_refs_info: {}
+  register: security_read
+  no_log: true
+- name: Read populated cluster references in check mode
+  ansible.proxmox.proxmox_firewall_refs_info: {}
+  check_mode: true
+  register: firewall_ref_cluster_check
+  no_log: true
+- name: Verify cluster reads never report changes
+  ansible.builtin.assert:
+    that:
+      - security_read is not changed
+      - firewall_ref_cluster_check is not changed
+  no_log: true
+- name: Verify each independently created reference and filter
+  ansible.builtin.include_tasks: reference.yml
+  vars:
+    firewall_ref_normal_references: '{{ security_read.references }}'
+    firewall_ref_check_references: '{{ firewall_ref_cluster_check.references }}'
+  loop: '{{ firewall_ref_fixtures | product([false, true]) | list }}'
+  loop_control:
+    loop_var: firewall_reference_case

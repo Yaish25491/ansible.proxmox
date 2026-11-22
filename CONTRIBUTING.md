@@ -178,3 +178,32 @@ list-all and selected information reads in check mode, creation/deletion
 predictions, removal of a user's last group, deletion of a populated group while
 preserving member accounts, and rejection of reserved group path segments.
 Run only with explicit authorization to create and remove these test identities.
+
+## Firewall reference integration tests
+
+Run `ansible-test integration proxmox_firewall_refs_info` with the shared private
+integration configuration and authorization to create temporary unused alias and
+IP-set definitions. The target preflights two unique identifiers, creates one
+unreferenced datacenter alias and one empty IP set, and independently verifies
+nonempty reference values and both type filters in normal and check mode.
+Cleanup removes only owned definitions, continues after errors and independently
+verifies both fixture metadata and public references. No firewall is enabled and
+no rule is created or changed.
+
+Supply existing QEMU and LXC guests in `proxmox_firewall_refs_info_test_guests`,
+using records such as `{type: qemu, node: pve01, vmid: 100}`. If omitted, the target
+independently discovers one existing guest of each type on `proxmox_node` (default
+pve01). Both types are required for full scope coverage; missing fixtures fail
+clearly. Guest configuration is never modified. Both guest scopes exercise both
+type filters and unfiltered reads in normal/check mode, verifying native reference
+spelling, datacenter origin and ownership comments. Missing-node and wrong-guest-type
+queries are also checked in both modes; empty guest loops cannot pass vacuously.
+
+The fixture helper ties each name to its kind and checks the ownership comment.
+Active alias operations also require the original documentation-range host address;
+alias deletion uses the native alias-list digest. IP sets must still be empty in
+normal and check mode, and deletion explicitly disables forced member removal.
+Malformed API responses never establish fixture absence or emptiness. Native IP-set
+deletion has no metadata digest; its nonempty-member check is atomic on the server.
+Cleanup attempts every definition and both verification paths before reporting any
+failed removal, even when a later read happens to find that definition absent.

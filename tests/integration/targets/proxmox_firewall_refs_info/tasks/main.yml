@@ -1,0 +1,58 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset reference fixture ownership
+  ansible.builtin.set_fact:
+    firewall_ref_cleanup_allowed: false
+- name: Verify scoped references using owned nonempty definitions
+  module_defaults:
+    group/ansible.proxmox.proxmox: &id001
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_firewall_ref_fixture: *id001
+  block:
+    - name: Verify fixture names are unused
+      proxmox_firewall_ref_fixture:
+        resource_id: '{{ item.id }}'
+        owned_ids: '{{ firewall_ref_fixtures | map(attribute=''id'') | list }}'
+        kind: '{{ item.kind }}'
+        read_only: true
+      loop: '{{ firewall_ref_fixtures }}'
+      register: firewall_ref_before
+    - name: Refuse existing reference fixtures
+      ansible.builtin.assert:
+        that:
+          - firewall_ref_before.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0
+    - name: Claim only preflighted absent references
+      ansible.builtin.set_fact:
+        firewall_ref_cleanup_allowed: true
+    - name: Create unused alias and empty IP-set definitions
+      proxmox_firewall_ref_fixture:
+        resource_id: '{{ item.id }}'
+        owned_ids: '{{ firewall_ref_fixtures | map(attribute=''id'') | list }}'
+        kind: '{{ item.kind }}'
+      loop: '{{ firewall_ref_fixtures }}'
+    - name: Verify populated cluster reference values and filters
+      ansible.builtin.include_tasks: reads.yml
+    - name: Discover designated existing guest fixtures
+      ansible.builtin.include_tasks: discover_guests.yml
+    - name: Verify independently discovered guest scopes
+      ansible.builtin.include_tasks: guests.yml
+      loop: '{{ firewall_ref_guests }}'
+      loop_control:
+        loop_var: firewall_guest
+        label: '{{ firewall_guest.type }}'
+    - name: Verify missing selections and rejected arguments
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Remove only owned unused definitions
+      ansible.builtin.include_tasks: cleanup.yml
+      when: firewall_ref_cleanup_allowed | bool

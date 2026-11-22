@@ -1,0 +1,37 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Attempt removal of every owned definition and continue after errors
+  proxmox_firewall_ref_fixture:
+    resource_id: '{{ item.id }}'
+    owned_ids: '{{ firewall_ref_fixtures | map(attribute=''id'') | list }}'
+    kind: '{{ item.kind }}'
+    state: absent
+  loop: '{{ firewall_ref_fixtures }}'
+  register: firewall_ref_cleanup
+  ignore_errors: true
+- name: Independently inspect every definition after cleanup attempts
+  proxmox_firewall_ref_fixture:
+    resource_id: '{{ item.id }}'
+    owned_ids: '{{ firewall_ref_fixtures | map(attribute=''id'') | list }}'
+    kind: '{{ item.kind }}'
+    read_only: true
+  loop: '{{ firewall_ref_fixtures }}'
+  register: firewall_ref_verify
+  ignore_errors: true
+- name: Independently read public references after cleanup
+  ansible.proxmox.proxmox_firewall_refs_info: {}
+  register: firewall_ref_public_after
+  ignore_errors: true
+  no_log: true
+- name: Expose cleanup failures and remaining owned references
+  ansible.builtin.assert:
+    that:
+      - firewall_ref_cleanup is succeeded
+      - firewall_ref_verify is succeeded
+      - firewall_ref_verify.results | map(attribute='fixture') | reject('equalto', none) | list | length == 0
+      - firewall_ref_public_after is succeeded
+      - firewall_ref_public_after.references | selectattr('scope', 'equalto', 'dc')
+        | selectattr('name', 'in', firewall_ref_fixtures | map(attribute='id') | list) | list | length == 0
+  no_log: true
