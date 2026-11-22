@@ -21,6 +21,7 @@ action_groups:
     - proxmox_node_info
     - proxmox_node_syslog_info
     - proxmox_node_time
+    - proxmox_permission_info
     - proxmox_pool
     - proxmox_pool_info
     - proxmox_realm

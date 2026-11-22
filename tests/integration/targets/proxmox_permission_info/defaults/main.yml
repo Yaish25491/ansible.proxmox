@@ -1,0 +1,13 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+permission_test_userid: '{{ proxmox_api_user | default('''', true) or (proxmox_api_token_id | default('''') | regex_replace(''![^!]+$'', '''')) }}'
+permission_test_tokenid: '{{ proxmox_api_token_id | default('''') if ''@'' in (proxmox_api_token_id | default('''')) else permission_test_userid ~ ''!''
+  ~ (proxmox_api_token_id | default('''')) }}'
+permission_test_missing_userid: "ansible-permission-missing-{{ integration_resource_ids | join('') }}@pve"
+permission_test_path: /access
+permission_test_privileges:
+  - Sys.Audit
+  - Permissions.Modify
+  - User.Modify

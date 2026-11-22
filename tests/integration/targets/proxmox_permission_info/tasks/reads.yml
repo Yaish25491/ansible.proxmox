@@ -1,0 +1,47 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Require configured known user and token subjects
+  ansible.builtin.assert:
+    that:
+      - permission_test_userid | length > 0
+      - '''@'' in permission_test_userid'
+      - permission_test_tokenid is match('.+@.+!.+')
+    quiet: true
+    fail_msg: >-
+      Configure permission_test_userid and permission_test_tokenid for an existing
+      administrative user and full user@realm!token subject. Password-authenticated
+      runs must explicitly supply the existing token ID in the private configuration.
+- name: Independently verify the configured subject user exists
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ permission_test_userid }}'
+  register: permission_user
+  no_log: true
+- name: Require the independently discovered subject
+  ansible.builtin.assert:
+    that:
+      - permission_user.users | length == 1
+      - permission_user.users[0].userid == permission_test_userid
+  no_log: true
+- name: Verify authenticated user and full token subjects in both modes
+  ansible.builtin.include_tasks: subjects.yml
+  loop: '{{ [none, permission_test_userid, permission_test_tokenid] | product([false, true]) | list }}'
+  loop_control:
+    loop_var: permission_case
+    label: '{{ permission_case.1 | ternary("check mode", "normal mode") }}'
+- name: Independently verify the unique missing subject is absent
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ permission_test_missing_userid }}'
+  register: permission_missing_user
+  no_log: true
+- name: Refuse an existing identity as the no-permission subject
+  ansible.builtin.assert:
+    that:
+      - permission_missing_user.users | length == 0
+  no_log: true
+- name: Exercise native empty permissions without creating a user
+  ansible.builtin.include_tasks: empty.yml
+  loop: '{{ [false, true] }}'
+  loop_control:
+    loop_var: permission_empty_check_mode

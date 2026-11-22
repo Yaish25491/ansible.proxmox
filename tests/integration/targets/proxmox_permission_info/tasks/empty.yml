@@ -1,0 +1,25 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Query the complete tree for the independently absent subject
+  ansible.proxmox.proxmox_permission_info:
+    userid: '{{ permission_test_missing_userid }}'
+  check_mode: '{{ permission_empty_check_mode }}'
+  register: permission_empty_tree
+  no_log: true
+- name: Query one ACL path for the independently absent subject
+  ansible.proxmox.proxmox_permission_info:
+    userid: '{{ permission_test_missing_userid }}'
+    path: '{{ permission_test_path }}'
+  check_mode: '{{ permission_empty_check_mode }}'
+  register: permission_empty_path
+  no_log: true
+- name: Verify native empty trees and nested empty privilege mappings
+  ansible.builtin.assert:
+    that:
+      - permission_empty_tree is not changed
+      - permission_empty_tree.permissions == {}
+      - permission_empty_path is not changed
+      - 'permission_empty_path.permissions == {permission_test_path: {}}'
+  no_log: true

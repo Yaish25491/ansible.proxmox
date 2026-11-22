@@ -1,0 +1,24 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject invalid selectors before API requests in both modes
+  ansible.proxmox.proxmox_permission_info:
+    path: '{{ permission_invalid.0.path | default(omit) }}'
+    userid: '{{ permission_invalid.0.userid | default(omit) }}'
+  check_mode: '{{ permission_invalid.1 }}'
+  loop: '{{ [{"path": "relative"}, {"path": "/access with spaces"}, {"path": "/wrong_path"}, {"path": "/no_path"}, {"path": "/vms/99"},
+    {"userid": "missing-realm"}, {"userid": "user@pve!"}]
+    | product([false, true]) | list }}'
+  loop_control:
+    loop_var: permission_invalid
+  register: permission_rejected
+  ignore_errors: true
+  no_log: true
+- name: Verify all invalid selectors failed without changes
+  ansible.builtin.assert:
+    that:
+      - permission_rejected.results | length == 14
+      - permission_rejected.results | selectattr('failed', 'equalto', true) | list | length == 14
+      - permission_rejected.results | selectattr('changed', 'equalto', true) | list | length == 0
+  no_log: true

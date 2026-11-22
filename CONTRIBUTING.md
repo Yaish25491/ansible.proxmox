@@ -270,3 +270,39 @@ and client keys are dummy values for disconnected owned fixtures, and secret
 fields are excluded from results. Additional OpenID audience tests require
 `libpve-access-control >= 9.1.1`; enable them explicitly with
 `realm_test_audiences_supported: true` only on a compatible server.
+
+## proxmox_permission_info integration tests
+
+ACA-5631 explicitly defines this read-only reader separately from ACL lifecycle
+(ACA-5629). ACL assignments are managed by `proxmox_acl`; this target verifies
+their calculated effect without adding another writer.
+
+Run `ansible-test integration proxmox_permission_info` with the shared private
+integration configuration. This target makes read-only requests, verifies normal
+and check-mode result shapes, and exercises rejected inputs. It creates no
+resources and requires no cleanup. API results are hidden from test output.
+
+The target independently discovers the configured administrative user, then
+queries the authenticated identity, that user and the configured full API token
+in normal and check mode. At the default `/access` path it compares concrete
+privileges with each subject's full tree and verifies known propagated privileges.
+For a custom path, comparison applies when the API enumerates that path in the
+full tree; the native tree does not enumerate every possible descendant path.
+A zero propagation
+flag still grants the privilege at that path; it does not mean denied.
+
+The shared `prepare_tests` dependency generates unique identifiers only. A unique
+missing user ID is independently verified absent, then queried in both modes to
+verify an empty tree and a selected path with an empty privilege mapping. No
+user, ACL or token is created or changed, so cleanup is inapplicable. Invalid
+user/path requests are also exercised in both modes.
+
+Password-authenticated runs must provide `permission_test_tokenid` for an existing
+test token with matching administrative access; a missing token fixture fails
+clearly. Password authentication can use the shared `proxmox_api_otp` setting.
+All authentication and TLS options come from the shared private configuration.
+
+Selected and returned paths must belong to supported PVE 9 ACL namespaces.
+Unsupported paths, malformed privilege maps and invalid propagation flags fail
+explicitly in both modes. Path validity does not establish object existence;
+valid paths for not-yet-created objects retain their native inheritance semantics.

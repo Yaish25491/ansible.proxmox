@@ -1,0 +1,46 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Query the selected subject at one ACL path
+  ansible.proxmox.proxmox_permission_info:
+    userid: '{{ permission_case.0 | default(omit, true) }}'
+    path: '{{ permission_test_path }}'
+  check_mode: '{{ permission_case.1 }}'
+  register: permission_selected
+  no_log: true
+- name: Verify exact path selection and a nonempty privilege map
+  ansible.builtin.assert:
+    that:
+      - permission_selected is not changed
+      - permission_selected.permissions.keys() | list == [permission_test_path]
+      - permission_selected.permissions[permission_test_path] is mapping
+      - permission_selected.permissions[permission_test_path] | length > 0
+  no_log: true
+- name: Verify known administrative privileges propagate
+  ansible.builtin.assert:
+    that:
+      - item in permission_selected.permissions[permission_test_path]
+      - permission_selected.permissions[permission_test_path][item] | bool
+  loop: '{{ permission_test_privileges }}'
+  no_log: true
+- name: Query the same subject's full effective permission tree
+  ansible.proxmox.proxmox_permission_info:
+    userid: '{{ permission_case.0 | default(omit, true) }}'
+  check_mode: '{{ permission_case.1 }}'
+  register: permission_all
+  no_log: true
+- name: Verify the concrete selected privileges agree with the full tree
+  ansible.builtin.assert:
+    that:
+      - permission_all is not changed
+      - permission_all.permissions is mapping
+      - permission_all.permissions | length > 0
+      - permission_selected.permissions[permission_test_path].values() | difference([0, 1]) | length == 0
+  no_log: true
+- name: Compare exact selected privileges when the native full tree enumerates that path
+  ansible.builtin.assert:
+    that:
+      - permission_all.permissions[permission_test_path] == permission_selected.permissions[permission_test_path]
+  when: permission_test_path in permission_all.permissions
+  no_log: true

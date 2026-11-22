@@ -8,6 +8,7 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
+import re
 import traceback
 
 from ansible.module_utils.basic import env_fallback, missing_required_lib
@@ -24,6 +25,30 @@ try:
     __import__("requests")
 except ImportError:
     REQUESTS_IMPORT_ERROR = traceback.format_exc()
+
+
+# PVE::AccessControl::check_path (PVE 9 authorization namespaces).
+PVE_ACL_PATH_PATTERNS = (
+    r"/",
+    r"/access(?:/(?:groups|realm)(?:/[A-Za-z0-9._-]+)?)?",
+    r"/nodes(?:/[A-Za-z0-9._-]+(?:/certificates)?)?",
+    r"/pool(?:/[A-Za-z0-9._-]+){0,3}",
+    r"/sdn",
+    r"/sdn/controllers(?:/[A-Za-z0-9_-]+)?",
+    r"/sdn/(?:dns|fabrics|ipams|prefix-lists|route-maps)(?:/[A-Za-z0-9]+)?",
+    r"/sdn/zones(?:/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+(?:/[1-9][0-9]{0,3})?)?)?",
+    r"/storage(?:/[A-Za-z0-9._-]+)?",
+    r"/vms(?:/[1-9][0-9]{2,})?",
+    r"/mapping(?:/[A-Za-z0-9._-]+){0,2}",
+)
+
+
+def is_pve_acl_path(path):
+    """Validate normalized PVE ACL namespace syntax without querying object existence."""
+    if not isinstance(path, str) or not path:
+        return False
+    normalized = "/" + re.sub(r"/+", "/", path).strip("/")
+    return any(re.fullmatch(pattern, normalized) for pattern in PVE_ACL_PATH_PATTERNS)
 
 
 def proxmox_argument_spec(argument_spec=None):
@@ -227,7 +252,7 @@ class ProxmoxClient:
         if "!" not in token_id:
             return user, token_id
 
-        token_user, token_name = token_id.split("!", 1)
+        token_user, token_name = token_id.rsplit("!", 1)
         if not token_user or not token_name:
             self.module.fail_json(msg="api_token_id must use the format user@realm!token or token")
         if user and user != token_user:

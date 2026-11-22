@@ -1,0 +1,4 @@
+bugfixes:
+  - >-
+    module_utils - Added consistent PVE ACL namespace validation for ACL writes and effective-permission reads
+    (https://github.com/ansible-collections/ansible.proxmox/pull/42, https://github.com/ansible-collections/ansible.proxmox/pull/44).

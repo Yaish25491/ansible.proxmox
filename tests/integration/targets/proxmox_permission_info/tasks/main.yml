@@ -1,0 +1,21 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise read-only queries
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+  block:
+    - name: Exercise normal and check-mode reads
+      ansible.builtin.include_tasks: reads.yml
+    - name: Exercise rejected inputs
+      ansible.builtin.include_tasks: errors.yml
