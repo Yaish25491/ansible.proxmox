@@ -1,0 +1,69 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject reserved factor path segments in normal and check mode
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ item.0 }}'
+    state: absent
+  check_mode: '{{ item.1 }}'
+  loop: "{{ ['.', '..'] | product([false, true]) | list }}"
+  register: tfa_invalid_segment
+  ignore_errors: true
+- name: Reject changing the controller authentication identity
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ proxmox_api_user }}'
+    factor_id: controller-must-not-be-managed
+    state: absent
+  register: tfa_controller_guard
+  ignore_errors: true
+- name: Reject unsupported recovery metadata editing without a write
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: recovery
+    description: Unsupported recovery description
+  register: tfa_recovery_guard
+  ignore_errors: true
+- name: Independently verify failed requests left no factors
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_after_errors
+- name: Verify every request was rejected without a change
+  ansible.builtin.assert:
+    that:
+      - tfa_invalid_segment.results | selectattr('failed', 'equalto', true) | list | length == 4
+      - tfa_invalid_segment.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - tfa_controller_guard is failed
+      - tfa_controller_guard is not changed
+      - tfa_recovery_guard is failed
+      - tfa_recovery_guard is not changed
+      - tfa_after_errors.users[0].entries | length == 0
+- name: Independently read owned realm settings before rejecting mixed operations
+  ansible.proxmox.proxmox_tfa_info:
+    query: configuration
+    realm: '{{ tfa_test_realm }}'
+  register: tfa_before_mixed_operation
+- name: Reject a factor selector combined with owned realm configuration
+  ansible.proxmox.proxmox_tfa:
+    state: configured
+    userid: '{{ tfa_test_userid }}'
+    realm: '{{ tfa_test_realm }}'
+    realm_tfa:
+      type: oath
+      step: 60
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: tfa_mixed_operation
+  ignore_errors: true
+- name: Independently read owned realm settings after rejected operations
+  ansible.proxmox.proxmox_tfa_info:
+    query: configuration
+    realm: '{{ tfa_test_realm }}'
+  register: tfa_after_mixed_operation
+- name: Verify mixed operations neither write nor change the owned configuration
+  ansible.builtin.assert:
+    that:
+      - tfa_mixed_operation.results | selectattr('failed', 'equalto', true) | list | length == 2
+      - tfa_mixed_operation.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - tfa_after_mixed_operation.configuration.get('tfa') == tfa_before_mixed_operation.configuration.get('tfa')

@@ -1,0 +1,2 @@
+bugfixes:
+  - Integration configuration generation preserved literal template-like text in passwords and token secrets.

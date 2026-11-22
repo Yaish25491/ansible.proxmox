@@ -1,0 +1,140 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset ownership for this external-authenticator case
+  ansible.builtin.set_fact:
+    tfa_provider_cleanup_allowed: false
+    tfa_provider_description: '{{ tfa_test_description }} {{ tfa_provider_case.type }}'
+- name: Require a designated external-authenticator fixture
+  ansible.builtin.assert:
+    that:
+      - tfa_provider_case.type in ['webauthn', 'u2f', 'yubico']
+      - tfa_provider_case.userid.startswith('ansible-')
+      - tfa_provider_case.userid != proxmox_api_user
+      - tfa_provider_case.userid != 'root@pam'
+      - tfa_provider_case.response_command is sequence
+      - tfa_provider_case.response_command is not string
+      - tfa_provider_case.response_command | length > 0
+- name: Exercise only the claimed factor on the designated existing test identity
+  no_log: true
+  block:
+    - name: Independently verify the designated test owner exists
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_owner
+    - name: Read existing fixture factors before claiming any identifier
+      ansible.proxmox.proxmox_tfa_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_before
+    - name: Verify the modern TFA marker without exposing legacy authentication keys
+      proxmox_tfa_provider_fixture_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_marker_before
+    - name: Require an owned disabled MFA fixture before claiming a new selector
+      ansible.builtin.assert:
+        that:
+          - tfa_provider_owner.users | length == 1
+          - tfa_provider_owner.users[0].comment == 'Owned Ansible TFA provider fixture'
+          - not tfa_provider_owner.users[0].enable
+          - tfa_provider_marker_before.fixture.modern_tfa
+          - tfa_provider_before.users[0].entries | selectattr('enable', 'equalto', true) | list | length > 0
+          - >-
+            tfa_provider_before.users[0].entries
+            | selectattr('type', 'equalto', tfa_provider_case.type)
+            | selectattr('description', 'equalto', tfa_provider_description) | list | length == 0
+    - name: Claim only the verified absent factor selector
+      ansible.builtin.set_fact:
+        tfa_provider_cleanup_allowed: true
+    - name: Start native hardware registration
+      ansible.proxmox.proxmox_tfa:
+        userid: '{{ tfa_provider_case.userid }}'
+        type: '{{ tfa_provider_case.type }}'
+        description: '{{ tfa_provider_description }}'
+      register: tfa_provider_start
+      when: tfa_provider_case.type != 'yubico'
+    - name: Verify the hardware request is pending rather than a completed factor
+      ansible.builtin.assert:
+        that:
+          - tfa_provider_start is changed
+          - tfa_provider_start.enrollment_pending
+          - tfa_provider_start.factor == none
+          - tfa_provider_start.challenge | length > 0
+      when: tfa_provider_case.type != 'yubico'
+    - name: Obtain a fresh response from the approved external fixture adapter
+      ansible.builtin.command:
+        argv: '{{ tfa_provider_case.response_command }}'
+        stdin: '{{ tfa_provider_start.challenge | default('''') }}'
+      register: tfa_provider_response
+      changed_when: false
+    - name: Complete native hardware registration or enroll the current Yubico OTP
+      ansible.proxmox.proxmox_tfa:
+        userid: '{{ tfa_provider_case.userid }}'
+        type: '{{ tfa_provider_case.type }}'
+        description: '{{ tfa_provider_description }}'
+        challenge: >-
+          {{ (((tfa_provider_start.challenge | from_json).publicKey.challenge
+              if tfa_provider_case.type == 'webauthn'
+              else tfa_provider_start.challenge)
+             if tfa_provider_case.type != 'yubico' else omit) | string }}
+        value: '{{ tfa_provider_response.stdout | trim | string }}'
+      register: tfa_provider_created
+    - name: Reconcile the completed selector without a new OTP or challenge
+      ansible.proxmox.proxmox_tfa:
+        userid: '{{ tfa_provider_case.userid }}'
+        type: '{{ tfa_provider_case.type }}'
+        description: '{{ tfa_provider_description }}'
+      register: tfa_provider_noop
+    - name: Independently read the completed factor by native ID
+      ansible.proxmox.proxmox_tfa_info:
+        userid: '{{ tfa_provider_case.userid }}'
+        factor_id: '{{ tfa_provider_created.factor.id }}'
+      check_mode: true
+      register: tfa_provider_actual
+    - name: Verify completed enrollment concrete values and no-op behavior
+      ansible.builtin.assert:
+        that:
+          - tfa_provider_created is changed
+          - tfa_provider_created.enrollment_pending is not defined
+          - tfa_provider_noop is not changed
+          - tfa_provider_actual is not changed
+          - tfa_provider_actual.users[0].entries[0].type == tfa_provider_case.type
+          - tfa_provider_actual.users[0].entries[0].description == tfa_provider_description
+  always:
+    - name: Remove only the claimed factor and continue to independent verification
+      ansible.proxmox.proxmox_tfa:
+        userid: '{{ tfa_provider_case.userid }}'
+        type: '{{ tfa_provider_case.type }}'
+        description: '{{ tfa_provider_description }}'
+        state: absent
+      register: tfa_provider_removed
+      ignore_errors: true
+      when: tfa_provider_cleanup_allowed | bool
+    - name: Independently verify removal and preservation of unrelated factors
+      ansible.proxmox.proxmox_tfa_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_cleanup_actual
+      ignore_errors: true
+      when: tfa_provider_cleanup_allowed | bool
+    - name: Independently verify the original fixture user attributes
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_owner_after
+      ignore_errors: true
+      when: tfa_provider_cleanup_allowed | bool
+    - name: Independently verify the original modern TFA marker
+      proxmox_tfa_provider_fixture_info:
+        userid: '{{ tfa_provider_case.userid }}'
+      register: tfa_provider_marker_after
+      ignore_errors: true
+      when: tfa_provider_cleanup_allowed | bool
+    - name: Expose any unresolved owned-factor cleanup
+      ansible.builtin.assert:
+        that:
+          - tfa_provider_cleanup_actual is not failed
+          - tfa_provider_cleanup_actual.users[0].entries == tfa_provider_before.users[0].entries
+          - tfa_provider_owner_after is not failed
+          - tfa_provider_owner_after.users == tfa_provider_owner.users
+          - tfa_provider_marker_after is not failed
+          - tfa_provider_marker_after.fixture == tfa_provider_marker_before.fixture
+      when: tfa_provider_cleanup_allowed | bool

@@ -1,0 +1,152 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise configuration without factor reauthentication defaults
+  module_defaults:
+    ansible.proxmox.proxmox_tfa:
+      reauth_password: '{{ omit }}'
+  block:
+    - name: Read existing cluster hardware configuration
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+      register: tfa_cluster_before
+    - name: Predict changing only the U2F origin for an owned hypothetical URL
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        u2f:
+          origin: 'https://{{ tfa_test_realm }}.invalid'
+      check_mode: true
+      register: tfa_cluster_prediction
+    - name: Independently verify cluster settings were preserved by prediction
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+      check_mode: true
+      register: tfa_cluster_after
+    - name: Verify cluster configuration is unchanged and prediction has the desired value
+      ansible.builtin.assert:
+        that:
+          - tfa_cluster_before is not changed
+          - tfa_cluster_after is not changed
+          - tfa_cluster_after.configuration == tfa_cluster_before.configuration
+          - tfa_cluster_prediction.configuration.u2f.origin == 'https://' ~ tfa_test_realm ~ '.invalid'
+    - name: Preflight the unique disconnected test realm before claiming it
+      proxmox_tfa_realm_fixture:
+        resource_id: '{{ tfa_test_realm }}'
+        owned_ids: '{{ [tfa_test_realm] }}'
+        read_only: true
+      register: tfa_realm_preflight
+    - name: Require the realm identifier to be unused
+      ansible.builtin.assert:
+        that:
+          - tfa_realm_preflight.fixture == none
+    - name: Claim only the verified absent realm identifier
+      ansible.builtin.set_fact:
+        tfa_realm_cleanup_allowed: true
+    - name: Create the owned realm without provider connectivity checks
+      proxmox_tfa_realm_fixture:
+        resource_id: '{{ tfa_test_realm }}'
+        owned_ids: '{{ [tfa_test_realm] }}'
+    - name: Predict realm TOTP enforcement without changing the owned definition
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        realm_tfa:
+          type: oath
+          digits: 8
+          step: 60
+      check_mode: true
+      register: tfa_realm_prediction
+    - name: Independently verify the predicted realm configuration is not stored
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+        realm: '{{ tfa_test_realm }}'
+      register: tfa_realm_before
+    - name: Configure TOTP on the owned unused realm
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        realm_tfa:
+          type: oath
+          digits: 8
+          step: 60
+      register: tfa_realm_written
+    - name: Verify a repeated realm configuration is unchanged
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        realm_tfa:
+          type: oath
+          digits: 8
+          step: 60
+      register: tfa_realm_noop
+    - name: Read the realm TFA property independently
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+        realm: '{{ tfa_test_realm }}'
+      register: tfa_realm_actual
+    - name: Verify concrete realm provider configuration and no-op behavior
+      ansible.builtin.assert:
+        that:
+          - tfa_realm_prediction is changed
+          - tfa_realm_before.configuration.tfa is not defined
+          - tfa_realm_written is changed
+          - tfa_realm_noop is not changed
+          - tfa_realm_actual.configuration.tfa.type == 'oath'
+          - tfa_realm_actual.configuration.tfa.digits | int == 8
+          - tfa_realm_actual.configuration.tfa.step | int == 60
+    - name: Reject a stale realm digest without writing
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        digest: '{{ ''0'' * 40 }}'
+        realm_tfa:
+          step: 90
+      register: tfa_realm_stale
+      ignore_errors: true
+    - name: Configure a disconnected Yubico provider only on the owned unused realm
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        realm_tfa:
+          type: yubico
+          id: '12345'
+          key: RVhBTVBMRS1OT1QtQS1DUkVERU5USUFM
+          url: https://yubico.ansible.invalid/verify
+      register: tfa_yubico_configured
+      no_log: true
+    - name: Independently read the non-secret Yubico settings
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+        realm: '{{ tfa_test_realm }}'
+      register: tfa_yubico_read
+      no_log: true
+    - name: Verify stale-digest protection and Yubico key exclusion
+      ansible.builtin.assert:
+        that:
+          - tfa_realm_stale is failed
+          - tfa_realm_stale is not changed
+          - tfa_yubico_configured is changed
+          - tfa_yubico_read.configuration.tfa.type == 'yubico'
+          - tfa_yubico_read.configuration.tfa.id == '12345'
+          - tfa_yubico_read.configuration.tfa.key is not defined
+          - tfa_yubico_configured.configuration.tfa.key is not defined
+      no_log: true
+    - name: Remove the owned realm TFA property explicitly
+      ansible.proxmox.proxmox_tfa:
+        state: configured
+        realm: '{{ tfa_test_realm }}'
+        remove_properties: [tfa]
+      register: tfa_realm_cleared
+    - name: Independently verify realm property removal in check mode
+      ansible.proxmox.proxmox_tfa_info:
+        query: configuration
+        realm: '{{ tfa_test_realm }}'
+      check_mode: true
+      register: tfa_realm_clear_actual
+    - name: Verify realm definition remains and its TFA property is absent
+      ansible.builtin.assert:
+        that:
+          - tfa_realm_cleared is changed
+          - tfa_realm_clear_actual.configuration.realm == tfa_test_realm
+          - tfa_realm_clear_actual.configuration.tfa is not defined

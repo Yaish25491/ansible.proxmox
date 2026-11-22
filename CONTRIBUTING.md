@@ -254,3 +254,84 @@ and client keys are dummy values for disconnected owned fixtures, and secret
 fields are excluded from results. Additional OpenID audience tests require
 `libpve-access-control >= 9.1.1`; enable them explicitly with
 `realm_test_audiences_supported: true` only on a compatible server.
+
+## Two-factor authentication integration tests
+
+The `proxmox_tfa` target exercises `proxmox_tfa` and `proxmox_tfa_info`
+together, including `state: configured` and `state: unlocked` operations. It
+creates one uniquely named disabled, passwordless PVE user and a disconnected
+LDAP realm definition.
+Both identifiers are preflighted absent before claiming ownership. Authentication
+is shared through group module defaults; the role-local realm helper reuses the
+resource framework. It never changes the controller's identity or an existing
+realm. The target uses root@pam password authentication for factor deletion;
+non-root DELETE confirmation is intentionally not sent in a URL.
+
+Set `tfa_test_allow_enrollment: true` only when these owned fixtures are
+authorized, then run `ansible-test integration --allow-disabled proxmox_tfa`. Missing password
+authentication or explicit authorization fails with an explanation rather than
+claiming mutation coverage. Existing token-only CI credentials are insufficient.
+For a generated local configuration, set `PROXMOX_TFA_ALLOW_ENROLLMENT=true`
+together with `PROXMOX_USER=root@pam` and `PROXMOX_PASSWORD`, leaving token
+variables unset. The enrollment opt-in defaults to false.
+
+The target is marked `disabled` to keep it out of the global token-authenticated
+pipeline. `.github/workflows/proxmox_tfa.yml` runs this paired target explicitly
+with `--allow-disabled`, an isolated Python environment and protected environment
+approval. It requires repository secret `PROXMOX_TFA_ROOT_PASSWORD` and repository
+variable `PROXMOX_TFA_ALLOW_ENROLLMENT=true` for the designated endpoint. Missing
+prerequisites fail before execution. Configuration is regenerated with `make -B`
+under a restrictive umask, then removed in an `always` cleanup step.
+
+Automatic live runs use `pull_request` events from the same repository, checked
+by immutable repository IDs. Fork PRs require an explicitly authorized manual
+run with the full reviewed commit SHA in the workflow's `ref` input. The
+protected environment approval applies to every run; no unsafe privileged PR
+checkout or bot-name trust check is used.
+
+CI installs published Core 2.16, 2.18, 2.20 and 2.21 wheels from the hash-locked
+files under `tests/integration/requirements/tfa/`, then calls `ansible-test`
+directly. Refresh the four Core pins and common dependency hashes together and
+validate every lock on Linux x86_64 with Python 3.12. Only binary distributions
+are accepted; `make integration` is avoided because it reinstalls unlocked
+requirements. No secret, opt-in or workflow approval is created by this PR.
+
+Default scenarios cover TOTP lifecycle, recovery-code creation and one-time
+returns, native user/realm type reads, conditional unlock on an unlocked owned
+user, and realm TOTP/Yubico property reconciliation. The Yubico configuration
+uses a reserved `.invalid` validation URL and dummy API key on the unused owned
+realm; it does not call a Yubico provider or enroll a device. Cluster WebAuthn/U2F
+configuration is read and predicted in check mode only. Existing cluster settings
+are independently verified unchanged. Actual lockout reset and cluster-setting
+writes have unit coverage; these scenarios do not force account lockouts or
+change the existing cluster's authentication settings.
+
+Sensitive tasks use `no_log: true`. Recovery codes are never printed or
+persisted by the target. Cleanup removes owned factors before users, attempts
+realm cleanup even after individual errors, and independently verifies final
+absence. Failed cleanup is exposed. The test realm has no users and provider
+connection checks are disabled.
+
+Hardware and real Yubico enrollment require external fixtures. To exercise them,
+set `tfa_test_allow_provider_enrollment: true` and provide `tfa_test_provider_cases`
+as a list of mappings containing `type` (`webauthn`, `u2f` or `yubico`), `userid`
+and `response_command` (an argument list, not a shell command). Owners must be
+existing disabled `ansible-` test accounts marked with the exact comment
+`Owned Ansible TFA provider fixture`, with the required realm/cluster provider
+settings already configured. They must not be root or the operator, and must
+already have an enabled factor and the modern TFA marker. A read-only role-local
+helper verifies that marker without returning legacy keys. This prevents failed
+hardware registration from enabling TFA on an account that previously had none.
+The command receives the native serialized registration request on standard
+input for hardware types and returns the serialized authenticator response on
+standard output. For Yubico it receives empty input and returns a fresh device
+OTP. It must implement the authenticator's physical interaction externally.
+
+Each provider case preflights its unique type/description selector, claims only
+that absent factor, exercises enrollment and a repeated no-op, then removes only
+that factor and independently verifies the owner's original factors are intact.
+The original user attributes and modern TFA marker are also independently
+verified after cleanup. The existing owner is never created, changed or removed.
+Hardware challenges can expire server-side and there is no cancel/list-pending API; starting a challenge
+is reported as pending, not as a completed factor. With the provider gate disabled,
+the target explicitly reports hardware/Yubico live coverage as unexecuted.

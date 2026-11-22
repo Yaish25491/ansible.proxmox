@@ -1,0 +1,123 @@
+---
+name: TFA integration
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/proxmox_tfa.yml'
+      - 'plugins/modules/proxmox_tfa*.py'
+      - 'plugins/modules/proxmox_user*.py'
+      - 'plugins/module_utils/**'
+      - 'tests/integration/targets/proxmox_tfa/**'
+      - 'tests/integration/targets/prepare_tests/**'
+      - 'tests/integration/requirements.txt'
+      - 'tests/integration/requirements/tfa/**'
+      - 'tests/integration/generate_integration_config.sh'
+      - 'tests/integration/integration_config.yml.tpl'
+      - 'requirements.txt'
+      - 'Makefile'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit SHA reviewed and approved for live TFA testing (defaults to the selected workflow revision)
+        type: string
+        required: false
+  schedule:
+    - cron: '0 7 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxmox-tfa-integration-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: "TFA integration (${{ matrix.ansible_version }})"
+    runs-on: [self-hosted, proxmox]
+    environment: eco-proxmox-protected
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        ansible_version:
+          - '2.16'
+          - '2.18'
+          - '2.20'
+          - '2.21'
+    defaults:
+      run:
+        shell: bash
+        working-directory: ansible_collections/ansible/proxmox
+    steps:
+      - name: Validate reviewed revision
+        id: revision
+        working-directory: ${{ runner.temp }}
+        env:
+          CHECKOUT_SHA: ${{ inputs.ref || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${CHECKOUT_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Select a full commit SHA reviewed for live TFA testing."
+            exit 1
+          fi
+          printf 'sha=%s\n' "${CHECKOUT_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ansible_collections/ansible/proxmox
+          ref: ${{ steps.revision.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install ansible-core (${{ matrix.ansible_version }})
+        env:
+          ANSIBLE_VERSION: ${{ matrix.ansible_version }}
+        run: |
+          set -euo pipefail
+          integration_venv="$(mktemp -d "${RUNNER_TEMP}/proxmox-tfa-venv.XXXXXX")"
+          printf 'INTEGRATION_VENV=%s\n' "${integration_venv}" >> "${GITHUB_ENV}"
+          python3.12 -m venv "${integration_venv}"
+          source "${integration_venv}/bin/activate"
+          python -m pip install --only-binary=:all: --require-hashes \
+            -r "tests/integration/requirements/tfa/${ANSIBLE_VERSION}.txt"
+
+      - name: Run password-authenticated TFA integration tests
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}
+          ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible_collections/ansible/proxmox/tests/integration/targets
+          PROXMOX_HOST: ${{ secrets.PROXMOX_HOST }}
+          PROXMOX_USER: root@pam
+          PROXMOX_PASSWORD: ${{ secrets.PROXMOX_TFA_ROOT_PASSWORD }}
+          PROXMOX_TOKEN_ID: ''
+          PROXMOX_TOKEN_SECRET: ''
+          PROXMOX_TFA_ALLOW_ENROLLMENT: ${{ vars.PROXMOX_TFA_ALLOW_ENROLLMENT }}
+          PROXMOX_VALIDATE_CERTS: ${{ secrets.PROXMOX_VALIDATE_CERTS }}
+          PROXMOX_CA_PATH: ${{ secrets.PROXMOX_CA_PATH }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROXMOX_PASSWORD}" || "${PROXMOX_TFA_ALLOW_ENROLLMENT}" != true ]]; then
+            echo "::error::TFA enrollment requires the approved PROXMOX_TFA_ROOT_PASSWORD repository secret."
+            echo "Set repository variable PROXMOX_TFA_ALLOW_ENROLLMENT=true after authorizing owned fixtures."
+            echo "Job approval alone does not supply these prerequisites."
+            exit 1
+          fi
+          source "${INTEGRATION_VENV}/bin/activate"
+          umask 077
+          rm -f tests/integration/integration_config.yml
+          make -B generate-integration-config
+          ansible-test integration proxmox_tfa --allow-disabled -v --color
+
+      - name: Clean integration files
+        if: always()
+        run: |
+          if [[ -n "${INTEGRATION_VENV:-}" ]]; then
+            rm -rf -- "${INTEGRATION_VENV}"
+          fi
+          rm -f tests/integration/integration_config.yml

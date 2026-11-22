@@ -1,0 +1,98 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset TFA fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    tfa_cleanup_allowed: false
+    tfa_realm_cleanup_allowed: false
+- name: Exercise independent TFA information and owned-factor lifecycle
+  module_defaults:
+    group/ansible.proxmox.proxmox: &tfa_connection_defaults
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_tfa_realm_fixture: *tfa_connection_defaults
+    proxmox_tfa_provider_fixture_info: *tfa_connection_defaults
+    ansible.proxmox.proxmox_tfa:
+      reauth_password: '{{ proxmox_tfa_reauth_password | default(omit, true) }}'
+  block:
+    - name: Read visible metadata without exposing identities or factors
+      ansible.proxmox.proxmox_tfa_info:
+      register: tfa_visible
+      no_log: true
+    - name: Read visible metadata in check mode
+      ansible.proxmox.proxmox_tfa_info:
+      register: tfa_visible_check
+      check_mode: true
+      no_log: true
+    - name: Verify information operations never report changes
+      ansible.builtin.assert:
+        that:
+          - tfa_visible is not changed
+          - tfa_visible_check is not changed
+    - name: Require explicit enrollment authorization and password authentication
+      ansible.builtin.assert:
+        that:
+          - tfa_test_allow_enrollment | bool
+          - proxmox_api_password | default('') | length > 0
+          - proxmox_api_user | default('') == 'root@pam'
+          - proxmox_api_token_id | default('') | length == 0
+          - proxmox_api_token_secret | default('') | length == 0
+        fail_msg: >-
+          Mutation coverage has not executed. Set tfa_test_allow_enrollment=true
+          and supply password-authenticated root@pam credentials in the
+          private integration configuration to authorize owned user/realm/TFA fixtures.
+    - name: Independently preflight the owned user identifier
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ tfa_test_userid }}'
+      register: tfa_preflight
+    - name: Refuse existing or controller identity ownership
+      ansible.builtin.assert:
+        that:
+          - tfa_preflight.users | length == 0
+          - tfa_test_userid != proxmox_api_user
+          - tfa_test_userid != 'root@pam'
+    - name: Claim only the verified absent identity
+      ansible.builtin.set_fact:
+        tfa_cleanup_allowed: true
+    - name: Create a disabled passwordless owned user
+      ansible.proxmox.proxmox_user:
+        userid: '{{ tfa_test_userid }}'
+        enable: false
+        comment: Owned TFA integration identity
+    - name: Exercise enrollment reconciliation predictions and independent reads
+      ansible.builtin.include_tasks: lifecycle.yml
+    - name: Exercise recovery sets native user types and conditional unlock
+      ansible.builtin.include_tasks: recovery.yml
+    - name: Exercise owned realm settings and cluster configuration predictions
+      ansible.builtin.include_tasks: configuration.yml
+    - name: Require concrete external fixtures when provider coverage is enabled
+      ansible.builtin.assert:
+        that:
+          - tfa_test_provider_cases | length > 0
+        fail_msg: Provider live coverage needs explicitly configured test owners and authenticator response commands.
+      when: tfa_test_allow_provider_enrollment | bool
+    - name: Exercise explicitly configured hardware or Yubico authenticators
+      ansible.builtin.include_tasks: provider.yml
+      loop: '{{ tfa_test_provider_cases }}'
+      loop_control:
+        loop_var: tfa_provider_case
+        label: '{{ tfa_provider_case.type }}'
+      when: tfa_test_allow_provider_enrollment | bool
+    - name: Report provider enrollment coverage that requires external fixtures
+      ansible.builtin.debug:
+        msg: Hardware and Yubico live enrollment have not executed; supply approved provider cases and enable their explicit gate.
+      when: not (tfa_test_allow_provider_enrollment | bool)
+    - name: Exercise rejected requests without modifying other identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Remove and independently verify only owned fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: tfa_cleanup_allowed | bool

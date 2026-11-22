@@ -1,0 +1,2 @@
+-r common.txt
+ansible-core==2.18.20 --hash=sha256:24a5cf92012407d968dc26c4294393c697be224b6aae87fa1d5be1db478205f8

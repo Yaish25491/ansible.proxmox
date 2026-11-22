@@ -1,0 +1,69 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Discover factors belonging only to the owned user
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_cleanup_inventory
+  ignore_errors: true
+- name: Remove owned-user factors before their parent and continue after errors
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ item.id }}'
+    state: absent
+  loop: "{{ (tfa_cleanup_inventory.users | default([]) | first | default({})).entries | default([]) }}"
+  register: tfa_cleanup_factors
+  ignore_errors: true
+- name: Independently verify owned factors were removed
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_cleanup_factor_actual
+  ignore_errors: true
+- name: Remove the owned parent identity after factor cleanup attempts
+  ansible.proxmox.proxmox_user:
+    userid: '{{ tfa_test_userid }}'
+    state: absent
+  register: tfa_cleanup_user
+  ignore_errors: true
+- name: Independently verify the owned parent identity was removed
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_cleanup_user_actual
+  ignore_errors: true
+- name: Independently verify no orphaned factor metadata remains
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_cleanup_final
+  ignore_errors: true
+- name: Remove only the claimed disconnected test realm
+  proxmox_tfa_realm_fixture:
+    resource_id: '{{ tfa_test_realm }}'
+    owned_ids: '{{ [tfa_test_realm] }}'
+    state: absent
+  register: tfa_realm_removed
+  ignore_errors: true
+  when: tfa_realm_cleanup_allowed | bool
+- name: Independently verify the owned test realm is absent
+  proxmox_tfa_realm_fixture:
+    resource_id: '{{ tfa_test_realm }}'
+    owned_ids: '{{ [tfa_test_realm] }}'
+    read_only: true
+  register: tfa_realm_actual
+  ignore_errors: true
+  when: tfa_realm_cleanup_allowed | bool
+- name: Expose any unresolved owned fixture cleanup
+  ansible.builtin.assert:
+    that:
+      - tfa_cleanup_factor_actual is not failed
+      - tfa_cleanup_factor_actual.users[0].entries | length == 0
+      - tfa_cleanup_user_actual is not failed
+      - tfa_cleanup_user_actual.users | length == 0
+      - tfa_cleanup_final is not failed
+      - tfa_cleanup_final.users[0].entries | length == 0
+- name: Expose any unresolved realm fixture cleanup
+  ansible.builtin.assert:
+    that:
+      - tfa_realm_actual is not failed
+      - tfa_realm_actual.fixture == none
+  when: tfa_realm_cleanup_allowed | bool

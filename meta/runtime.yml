@@ -27,6 +27,8 @@ action_groups:
     - proxmox_realm_info
     - proxmox_role
     - proxmox_role_info
+    - proxmox_tfa
+    - proxmox_tfa_info
     - proxmox_user
     - proxmox_user_info
     - proxmox_vm

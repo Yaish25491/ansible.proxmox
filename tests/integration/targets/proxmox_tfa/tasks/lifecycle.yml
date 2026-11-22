@@ -1,0 +1,163 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Verify the new owned user has no factors
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_empty
+- name: Require an empty initial factor list
+  ansible.builtin.assert:
+    that:
+      - tfa_empty.users | length == 1
+      - tfa_empty.users[0].entries | length == 0
+- name: Generate temporary enrollment inputs locally
+  proxmox_tfa_fixture:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_enrollment
+  no_log: true
+- name: Predict disabled TOTP enrollment without exposing or inventing secrets
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: totp
+    description: '{{ tfa_test_description }}'
+    enable: false
+    totp_uri: '{{ tfa_enrollment.uri }}'
+    value: '{{ tfa_enrollment.value }}'
+  check_mode: true
+  register: tfa_predicted
+  no_log: true
+- name: Independently verify enrollment prediction did not write
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_after_prediction
+- name: Verify enrollment prediction and empty actual state
+  ansible.builtin.assert:
+    that:
+      - tfa_predicted is changed
+      - tfa_predicted.factor.id is not defined
+      - not tfa_predicted.factor.enable
+      - tfa_after_prediction.users[0].entries | length == 0
+- name: Enroll a disabled factor using temporary inputs
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: totp
+    description: '{{ tfa_test_description }}'
+    enable: false
+    totp_uri: '{{ tfa_enrollment.uri }}'
+    value: '{{ tfa_enrollment.value }}'
+  register: tfa_created
+  no_log: true
+- name: Independently read the enrolled factor by ID
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+  register: tfa_actual
+- name: Verify concrete enrollment metadata
+  ansible.builtin.assert:
+    that:
+      - tfa_created is changed
+      - tfa_actual is not changed
+      - tfa_actual.users[0].entries | length == 1
+      - tfa_actual.users[0].entries[0].type == 'totp'
+      - tfa_actual.users[0].entries[0].description == tfa_test_description
+      - not tfa_actual.users[0].entries[0].enable
+- name: Reconcile existing enrollment without reusing the code or secret
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: totp
+    description: '{{ tfa_test_description }}'
+    enable: false
+  register: tfa_noop
+- name: Predict enabling and renaming by stable factor ID
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    description: '{{ tfa_test_description }} renamed'
+    enable: true
+  check_mode: true
+  register: tfa_update_prediction
+- name: Independently verify predicted update did not write
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+  register: tfa_before_update
+- name: Verify update prediction and repeated enrollment no-op
+  ansible.builtin.assert:
+    that:
+      - tfa_noop is not changed
+      - tfa_update_prediction is changed
+      - tfa_update_prediction.factor.enable
+      - tfa_before_update.users[0].entries == tfa_actual.users[0].entries
+- name: Enable and rename the selected factor
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    description: '{{ tfa_test_description }} renamed'
+    enable: true
+  register: tfa_updated
+- name: Reconcile an explicit empty description
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    description: ''
+  register: tfa_cleared
+- name: Preserve all omitted metadata
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+  register: tfa_omitted
+- name: Read updated metadata in check mode
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+  check_mode: true
+  register: tfa_updated_info
+- name: Verify actual updates omission and check-mode information
+  ansible.builtin.assert:
+    that:
+      - tfa_updated is changed
+      - tfa_cleared is changed
+      - tfa_omitted is not changed
+      - tfa_updated_info is not changed
+      - tfa_updated_info.users[0].entries[0].enable
+      - tfa_updated_info.users[0].entries[0].description == ''
+- name: Predict selected-factor deletion
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    state: absent
+  check_mode: true
+  register: tfa_delete_prediction
+- name: Verify predicted deletion preserved the factor
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+  register: tfa_before_delete
+- name: Verify selected-factor deletion prediction
+  ansible.builtin.assert:
+    that:
+      - tfa_delete_prediction is changed
+      - tfa_before_delete.users[0].entries | length == 1
+- name: Delete the selected factor
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    state: absent
+  register: tfa_deleted
+- name: Repeat selected-factor deletion
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+    state: absent
+  register: tfa_absent
+- name: Independently verify selected-factor removal
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: '{{ tfa_created.factor.id }}'
+  register: tfa_removed
+- name: Verify actual deletion and absent no-op
+  ansible.builtin.assert:
+    that:
+      - tfa_deleted is changed
+      - tfa_absent is not changed
+      - tfa_removed.users | length == 0

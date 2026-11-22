@@ -1,0 +1,116 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict recovery-set creation without inventing codes
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: recovery
+  check_mode: true
+  register: tfa_recovery_prediction
+  no_log: true
+- name: Independently verify prediction did not create a recovery set
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: recovery
+  register: tfa_recovery_before
+- name: Verify predicted creation and actual absence
+  ansible.builtin.assert:
+    that:
+      - tfa_recovery_prediction is changed
+      - tfa_recovery_prediction.recovery_codes is not defined
+      - tfa_recovery_prediction.factor.id is not defined
+      - tfa_recovery_before.users == []
+  no_log: true
+- name: Create the owned user's one-time recovery set
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: recovery
+  register: tfa_recovery_created
+  no_log: true
+- name: Reconcile the existing recovery set without replacing codes
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    type: recovery
+  register: tfa_recovery_noop
+  no_log: true
+- name: Read recovery metadata independently
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: recovery
+  register: tfa_recovery_actual
+  no_log: true
+- name: Verify codes are returned once and metadata contains only the fixed factor
+  ansible.builtin.assert:
+    that:
+      - tfa_recovery_created is changed
+      - tfa_recovery_created.recovery_codes | length > 0
+      - tfa_recovery_created.factor.id == 'recovery'
+      - tfa_recovery_noop is not changed
+      - tfa_recovery_noop.recovery_codes is not defined
+      - tfa_recovery_actual.recovery_codes is not defined
+      - tfa_recovery_actual.users[0].entries[0].id == 'recovery'
+  no_log: true
+- name: Query all native user factor types
+  ansible.proxmox.proxmox_tfa_info:
+    query: user_types
+    userid: '{{ tfa_test_userid }}'
+    multiple: true
+  register: tfa_native_types
+- name: Query the legacy native type representation in check mode
+  ansible.proxmox.proxmox_tfa_info:
+    query: user_types
+    userid: '{{ tfa_test_userid }}'
+    multiple: false
+  check_mode: true
+  register: tfa_legacy_types
+- name: Verify native type queries reflect the owned recovery set
+  ansible.builtin.assert:
+    that:
+      - tfa_native_types is not changed
+      - tfa_native_types.user_types.userid == tfa_test_userid
+      - "'recovery' in tfa_native_types.user_types.user"
+      - tfa_legacy_types is not changed
+      - tfa_legacy_types.user_types.userid == tfa_test_userid
+- name: Exercise lockout reset without factor reauthentication defaults
+  module_defaults:
+    ansible.proxmox.proxmox_tfa:
+      reauth_password: '{{ omit }}'
+  block:
+    - name: Predict a lockout reset without changing authentication
+      ansible.proxmox.proxmox_tfa:
+        state: unlocked
+        userid: '{{ tfa_test_userid }}'
+      check_mode: true
+      register: tfa_unlock_prediction
+    - name: Request a native lockout reset on the unlocked owned user
+      ansible.proxmox.proxmox_tfa:
+        state: unlocked
+        userid: '{{ tfa_test_userid }}'
+      register: tfa_unlock_actual
+    - name: Repeat the lockout reset as a native no-op
+      ansible.proxmox.proxmox_tfa:
+        state: unlocked
+        userid: '{{ tfa_test_userid }}'
+      register: tfa_unlock_repeat
+    - name: Verify conditional unlock does not claim a mutation on an unlocked account
+      ansible.builtin.assert:
+        that:
+          - tfa_unlock_prediction is changed
+          - tfa_unlock_actual is not changed
+          - not tfa_unlock_actual.tfa.was_locked
+          - tfa_unlock_repeat is not changed
+- name: Remove the owned recovery set
+  ansible.proxmox.proxmox_tfa:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: recovery
+    state: absent
+- name: Independently verify recovery-set removal
+  ansible.proxmox.proxmox_tfa_info:
+    userid: '{{ tfa_test_userid }}'
+    factor_id: recovery
+  register: tfa_recovery_removed
+- name: Verify recovery-set absence
+  ansible.builtin.assert:
+    that:
+      - tfa_recovery_removed.users == []
