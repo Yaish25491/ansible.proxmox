@@ -1,0 +1,47 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset realm ownership for this invocation
+  ansible.builtin.set_fact:
+    realm_cleanup_allowed: false
+- name: Exercise realm configuration and independent information reads
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+  block:
+    - name: Verify fixture realm identifiers are distinct
+      ansible.builtin.assert:
+        that:
+          - realm_test_fixtures | map(attribute='realm') | unique | length == realm_test_fixtures | length
+    - name: Verify fixture realms are absent before claiming ownership
+      ansible.proxmox.proxmox_realm_info:
+        realm: '{{ item.realm }}'
+      loop: '{{ realm_test_fixtures }}'
+      register: realm_preflight
+    - name: Refuse existing realm identifiers
+      ansible.builtin.assert:
+        that:
+          - realm_preflight.results | map(attribute='realms') | flatten | length == 0
+    - name: Claim only the verified absent realms
+      ansible.builtin.set_fact:
+        realm_cleanup_allowed: true
+    - name: Exercise configuration lifecycle for every provider
+      ansible.builtin.include_tasks: lifecycle.yml
+      loop: '{{ realm_test_fixtures }}'
+      loop_control:
+        loop_var: realm_fixture
+        label: '{{ realm_fixture.realm }}'
+    - name: Exercise rejected requests without modifying existing identities
+      ansible.builtin.include_tasks: errors.yml
+  always:
+    - name: Remove and independently verify only owned realm fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: realm_cleanup_allowed

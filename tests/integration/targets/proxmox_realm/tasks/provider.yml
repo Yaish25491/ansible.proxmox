@@ -1,0 +1,117 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Select concrete configuration values for this owned provider
+  ansible.builtin.set_fact:
+    realm_provider_values: >-
+      {{ {'realm': realm_fixture.realm, 'server2': 'backup.example.invalid', 'mode': 'ldaps',
+          'verify': true, 'port': 636, 'bind_dn': 'cn=fixture,dc=example,dc=invalid',
+          'password': 'EXAMPLE-disconnected-fixture', 'update_password': 'on_create', 'check_connection': false}
+         if realm_fixture.type != 'openid' else
+         {'realm': realm_fixture.realm, 'groups_claim': 'groups', 'groups_autocreate': true,
+          'groups_overwrite': true, 'query_userinfo': false, 'scopes': 'email profile groups',
+          'client_key': 'EXAMPLE-disconnected-fixture', 'acr_values': 'urn:example:fixture'} }}
+  no_log: true
+- name: Predict provider-specific reconciliation
+  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  check_mode: true
+  register: realm_provider_prediction
+  no_log: true
+- name: Independently verify provider prediction preserved configuration
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_provider_before
+- name: Verify provider prediction and actual state
+  ansible.builtin.assert:
+    that:
+      - realm_provider_prediction is changed
+      - realm_provider_before.realms == realm_empty_info.realms
+  no_log: true
+- name: Apply provider-specific settings without contacting the provider
+  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  register: realm_provider_updated
+  no_log: true
+- name: Repeat provider-specific settings
+  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  register: realm_provider_repeated
+  no_log: true
+- name: Independently read provider-specific settings
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_provider_actual
+- name: Verify reconciliation and exclusion of secrets
+  ansible.builtin.assert:
+    that:
+      - realm_provider_updated is changed
+      - realm_provider_repeated is not changed
+      - realm_provider_actual is not changed
+      - "'password' not in realm_provider_updated.realm"
+      - "'client-key' not in realm_provider_updated.realm"
+      - "'password' not in realm_provider_actual.realms[0]"
+      - "'client-key' not in realm_provider_actual.realms[0]"
+  no_log: true
+- name: Verify concrete LDAP or AD values independently
+  ansible.builtin.assert:
+    that:
+      - realm_provider_actual.realms[0].server1 == realm_fixture.server1
+      - realm_provider_actual.realms[0].server2 == 'backup.example.invalid'
+      - realm_provider_actual.realms[0].mode == 'ldaps'
+      - realm_provider_actual.realms[0].port | int == 636
+      - realm_provider_actual.realms[0].verify | bool
+      - realm_provider_actual.realms[0].bind_dn == 'cn=fixture,dc=example,dc=invalid'
+  when: realm_fixture.type != 'openid'
+- name: Verify concrete OpenID values independently
+  ansible.builtin.assert:
+    that:
+      - realm_provider_actual.realms[0]['issuer-url'] == realm_fixture.issuer_url
+      - realm_provider_actual.realms[0]['client-id'] == realm_fixture.client_id
+      - realm_provider_actual.realms[0]['groups-claim'] == 'groups'
+      - realm_provider_actual.realms[0]['groups-autocreate'] | bool
+      - realm_provider_actual.realms[0]['groups-overwrite'] | bool
+      - not (realm_provider_actual.realms[0]['query-userinfo'] | bool)
+      - realm_provider_actual.realms[0].scopes == 'email profile groups'
+      - realm_provider_actual.realms[0]['acr-values'] == 'urn:example:fixture'
+  when: realm_fixture.type == 'openid'
+- name: Reset provider boolean defaults and remove optional settings
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    mode: '{{ "ldap" if realm_fixture.type != "openid" else omit }}'
+    verify: '{{ false if realm_fixture.type != "openid" else omit }}'
+    groups_autocreate: '{{ false if realm_fixture.type == "openid" else omit }}'
+    groups_overwrite: '{{ false if realm_fixture.type == "openid" else omit }}'
+    query_userinfo: '{{ true if realm_fixture.type == "openid" else omit }}'
+    remove_properties: '{{ ["server2", "port", "bind_dn"] if realm_fixture.type != "openid" else ["client_key", "groups_claim", "acr_values"] }}'
+  register: realm_provider_reset
+- name: Independently verify provider resets
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_provider_reset_info
+- name: Verify LDAP or AD reset values
+  ansible.builtin.assert:
+    that:
+      - realm_provider_reset is changed
+      - realm_provider_reset_info.realms[0].get('mode', 'ldap') == 'ldap'
+      - not (realm_provider_reset_info.realms[0].get('verify', 0) | bool)
+      - realm_provider_reset_info.realms[0].server2 is not defined
+      - realm_provider_reset_info.realms[0].port is not defined
+  when: realm_fixture.type != 'openid'
+- name: Verify OpenID reset values
+  ansible.builtin.assert:
+    that:
+      - realm_provider_reset is changed
+      - not (realm_provider_reset_info.realms[0].get('groups-autocreate', 0) | bool)
+      - not (realm_provider_reset_info.realms[0].get('groups-overwrite', 0) | bool)
+      - realm_provider_reset_info.realms[0].get('query-userinfo', 1) | bool
+      - realm_provider_reset_info.realms[0]['groups-claim'] is not defined
+      - realm_provider_reset_info.realms[0]['acr-values'] is not defined
+  when: realm_fixture.type == 'openid'
+- name: Exercise additional audiences only on an explicitly compatible provider version
+  ansible.builtin.include_tasks: audiences.yml
+  when:
+    - realm_fixture.type == 'openid'
+    - realm_test_audiences_supported | bool
+- name: Capture configuration after provider-specific tests
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_empty_info

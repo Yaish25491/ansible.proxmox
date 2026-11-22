@@ -66,7 +66,7 @@ class ProxmoxBase(ABC):
             exists = resource is not None
 
         if not exists and fail_on_missing:
-            self.module.fail_json(msg="{0} {1} does not exist".format(resource_type.capitalize(), resource_name))
+            self.client.fail_request("{0} {1} does not exist".format(resource_type.capitalize(), resource_name))
         return exists
 
     def call_api(self, operation, function, *args, **kwargs):
