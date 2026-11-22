@@ -1,0 +1,57 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject invalid selectors before API requests in both modes
+  ansible.proxmox.proxmox_firewall_log_info:
+    scope: '{{ firewall_invalid.0.scope | default("node") }}'
+    node: '{{ proxmox_node }}'
+    vmid: '{{ firewall_invalid.0.vmid | default(omit) }}'
+    start: '{{ firewall_invalid.0.start | default(omit) }}'
+    limit: '{{ firewall_invalid.0.limit | default(omit) }}'
+    since: '{{ firewall_invalid.0.since | default(omit) }}'
+    until: '{{ firewall_invalid.0.until | default(omit) }}'
+  check_mode: '{{ firewall_invalid.1 }}'
+  register: firewall_log_invalid
+  ignore_errors: true
+  loop: '{{ [{"limit": -1}, {"start": -1}, {"since": -1}, {"until": -1}, {"since": 2, "until": 1}, {"scope": "qemu"}, {"vmid": 100}]
+    | product([false, true]) | list }}'
+  loop_control:
+    loop_var: firewall_invalid
+- name: Verify every invalid input fails without changes
+  ansible.builtin.assert:
+    that:
+      - firewall_log_invalid.results | rejectattr('failed', 'equalto', true) | list | length == 0
+      - firewall_log_invalid.results | selectattr('changed', 'equalto', true) | list | length == 0
+- name: Read missing nodes in all scopes and both modes
+  ansible.proxmox.proxmox_firewall_log_info:
+    scope: '{{ firewall_missing.0 }}'
+    node: ansible-node-does-not-exist
+    vmid: '{{ 100 if firewall_missing.0 != "node" else omit }}'
+  check_mode: '{{ firewall_missing.1 }}'
+  register: firewall_log_missing
+  loop: '{{ ["node", "qemu", "lxc"] | product([false, true]) | list }}'
+  loop_control:
+    loop_var: firewall_missing
+- name: Verify missing-node reads are empty and unchanged
+  ansible.builtin.assert:
+    that:
+      - firewall_log_missing.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - firewall_log_missing.results | rejectattr('firewall_log', 'equalto', []) | list | length == 0
+- name: Read a known QEMU guest through the wrong guest type
+  ansible.proxmox.proxmox_firewall_log_info:
+    scope: lxc
+    node: '{{ firewall_wrong_type.node }}'
+    vmid: '{{ firewall_wrong_type.vmid }}'
+  vars:
+    firewall_wrong_type: '{{ firewall_log_guests | selectattr("type", "equalto", "qemu") | first }}'
+  check_mode: '{{ item }}'
+  register: firewall_log_wrong_type
+  loop: [false, true]
+  no_log: true
+- name: Verify wrong-type selections are empty and unchanged
+  ansible.builtin.assert:
+    that:
+      - firewall_log_wrong_type.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - firewall_log_wrong_type.results | rejectattr('firewall_log', 'equalto', []) | list | length == 0
+  no_log: true

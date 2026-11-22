@@ -1,0 +1,36 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Discover existing QEMU and LXC fixtures when none were supplied
+  when: proxmox_firewall_log_info_test_guests | default([]) | length == 0
+  block:
+    - name: Independently list existing QEMU guests
+      ansible.proxmox.proxmox_vm_info:
+        node: '{{ proxmox_node }}'
+      register: firewall_known_vms
+      no_log: true
+    - name: Independently list existing LXC guests
+      ansible.proxmox.proxmox_lxc_info:
+        node: '{{ proxmox_node }}'
+      register: firewall_known_lxcs
+      no_log: true
+    - name: Require designated existing fixtures for both guest API scopes
+      ansible.builtin.assert:
+        that:
+          - firewall_known_vms.vms | length > 0
+          - firewall_known_lxcs.lxcs | length > 0
+    - name: Select one independently discovered guest of each type
+      ansible.builtin.set_fact:
+        firewall_discovered_guests: '{{ [{''type'': ''qemu'', ''node'': proxmox_node, ''vmid'': firewall_known_vms.vms[0].vmid}, {''type'': ''lxc'', ''node'':
+          proxmox_node, ''vmid'': firewall_known_lxcs.lxcs[0].vmid}] }}'
+      no_log: true
+- name: Use configured or independently discovered guest fixtures
+  ansible.builtin.set_fact:
+    firewall_log_guests: '{{ proxmox_firewall_log_info_test_guests | default(firewall_discovered_guests | default([]), true) }}'
+  no_log: true
+- name: Require explicit coverage of both guest types
+  ansible.builtin.assert:
+    that:
+      - '''qemu'' in (firewall_log_guests | map(attribute=''type'') | list)'
+      - '''lxc'' in (firewall_log_guests | map(attribute=''type'') | list)'

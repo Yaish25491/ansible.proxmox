@@ -270,3 +270,32 @@ and client keys are dummy values for disconnected owned fixtures, and secret
 fields are excluded from results. Additional OpenID audience tests require
 `libpve-access-control >= 9.1.1`; enable them explicitly with
 `realm_test_audiences_supported: true` only on a compatible server.
+
+## proxmox_firewall_log_info integration tests
+
+Run `ansible-test integration proxmox_firewall_log_info` with the shared private
+integration configuration. Set `proxmox_node` to the designated node (default
+`pve01`). The target makes read-only requests and creates no resources, so it
+requires no cleanup. Raw logs and guest identifiers are hidden from test output.
+
+The target independently verifies the node and existing QEMU/LXC fixtures.
+Provide `proxmox_firewall_log_info_test_guests` as a list of
+`{type: qemu, node: pve01, vmid: 100}` records (or `type: lxc`), including both
+types. When omitted, it automatically discovers one guest of each type on the
+designated node and fails clearly if either type is unavailable.
+
+Coverage includes native record fields and guest ownership, first/nonzero-offset
+pages, inclusive epoch bounds, zero sentinels, missing selections, wrong guest
+types and rejected inputs, in both normal and check mode. Each query is bounded;
+unbounded `limit=0` forwarding is covered by units to avoid collecting all logs.
+Pagination does not assume an immutable snapshot. Zero epoch bounds disable the
+corresponding comparison but still request the native rotated-log search.
+
+By default, `firewall_log_require_content: true` requires at least one native
+formatted node record. Set it to `false` in the private integration configuration
+to exercise empty pages and backend diagnostics on a node without populated
+logs. Missing content is reported as unverified coverage; it never counts as
+proof of timestamp filtering. Available formatted records still undergo the
+pagination, timestamp and ownership assertions. The target never enables
+logging, generates traffic or modifies firewall rules. Populated guest and
+rotated-log coverage requires existing fixtures and must be reported separately.

@@ -1,0 +1,16 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise first and nonzero-offset pages in both modes
+  ansible.builtin.include_tasks: page.yml
+  loop: '{{ [0, 1] | product([false, true]) | list }}'
+  loop_control:
+    loop_var: firewall_log_page_case
+- name: Exercise inclusive epoch bounds and zero sentinels in both modes
+  ansible.builtin.include_tasks: filters.yml
+  loop: '{{ [{"since": firewall_log_test_since, "until": firewall_log_test_until}, {"since": firewall_log_test_since, "until": 0},
+    {"since": 0, "until": firewall_log_test_until}, {"since": 0, "until": 0}, {"since": 4102444800, "until": 0}, {"since": 0, "until": 1}]
+    | product([false, true]) | list }}'
+  loop_control:
+    loop_var: firewall_log_case

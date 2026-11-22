@@ -1,0 +1,36 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Independently read the designated QEMU fixture
+  ansible.proxmox.proxmox_vm_info:
+    node: '{{ firewall_guest.node }}'
+    vmid: '{{ firewall_guest.vmid }}'
+  when: firewall_guest.type == 'qemu'
+  register: firewall_guest_vm
+  no_log: true
+- name: Independently read the designated LXC fixture
+  ansible.proxmox.proxmox_lxc_info:
+    node: '{{ firewall_guest.node }}'
+    vmid: '{{ firewall_guest.vmid }}'
+  when: firewall_guest.type == 'lxc'
+  register: firewall_guest_ct
+  no_log: true
+- name: Require the selected QEMU fixture to exist
+  ansible.builtin.assert:
+    that:
+      - firewall_guest_vm.vms | length == 1
+  when: firewall_guest.type == 'qemu'
+  no_log: true
+- name: Require the selected LXC fixture to exist
+  ansible.builtin.assert:
+    that:
+      - firewall_guest_ct.lxcs | length == 1
+  when: firewall_guest.type == 'lxc'
+  no_log: true
+- name: Verify guest pages filters and ownership in both modes
+  ansible.builtin.include_tasks: queries.yml
+  vars:
+    firewall_log_query_scope: '{{ firewall_guest.type }}'
+    firewall_log_query_node: '{{ firewall_guest.node }}'
+    firewall_log_query_vmid: '{{ firewall_guest.vmid }}'

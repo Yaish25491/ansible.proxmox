@@ -1,0 +1,25 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read a scoped bounded page
+  ansible.proxmox.proxmox_firewall_log_info:
+    scope: '{{ firewall_log_query_scope | default("node") }}'
+    node: '{{ firewall_log_query_node | default(proxmox_node) }}'
+    vmid: '{{ firewall_log_query_vmid | default(omit) }}'
+    start: '{{ firewall_log_page_case.0 }}'
+    limit: 1
+  check_mode: '{{ firewall_log_page_case.1 }}'
+  register: firewall_log_page
+  no_log: true
+- name: Verify page size and read-only result
+  ansible.builtin.assert:
+    that:
+      - firewall_log_page is not changed
+      - firewall_log_page.firewall_log | length <= 1
+  no_log: true
+- name: Verify every page record
+  ansible.builtin.include_tasks: records.yml
+  vars:
+    firewall_log_records: '{{ firewall_log_page.firewall_log }}'
+    firewall_log_page_start: '{{ firewall_log_page_case.0 }}'

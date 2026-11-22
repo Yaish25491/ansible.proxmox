@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read a bounded node firewall log page
+  ansible.proxmox.proxmox_firewall_log_info:
+    node: '{{ proxmox_node }}'
+    start: 0
+    limit: '{{ firewall_log_test_limit }}'
+  register: security_read
+  no_log: true
+- name: Verify node read and page size
+  ansible.builtin.assert:
+    that:
+      - security_read is not changed
+      - security_read.firewall_log is sequence
+      - security_read.firewall_log | length <= firewall_log_test_limit | int
+  no_log: true
+- name: Detect actual native firewall log content without exposing records
+  ansible.builtin.set_fact:
+    firewall_log_has_content: '{{ security_read.firewall_log | selectattr("t", "match", firewall_log_test_content_pattern) | list | length > 0 }}'
+  no_log: true
+- name: Require a populated log fixture to prove content and filter behavior
+  ansible.builtin.assert:
+    that:
+      - firewall_log_has_content | bool
+    quiet: true
+    fail_msg: A populated native firewall log fixture is required. Empty logs and backend diagnostics do not prove content coverage. Supply an existing
+      designated logging fixture; this target never enables logging or generates traffic.
+  when: firewall_log_require_content | bool
+- name: Report missing populated-log coverage
+  ansible.builtin.debug:
+    msg: No formatted node log records were observed. Populated-log and timestamp-filter coverage remain unverified.
+  when: not (firewall_log_has_content | bool)
+- name: Verify initial records
+  ansible.builtin.include_tasks: records.yml
+  vars:
+    firewall_log_records: '{{ security_read.firewall_log }}'
+- name: Verify node pages and filters in both modes
+  ansible.builtin.include_tasks: queries.yml

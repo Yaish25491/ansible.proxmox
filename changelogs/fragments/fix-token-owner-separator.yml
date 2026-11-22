@@ -1,0 +1,2 @@
+bugfixes:
+  - Proxmox HTTPS authentication preserved exclamation marks in token-owner usernames when parsing full API token identifiers.

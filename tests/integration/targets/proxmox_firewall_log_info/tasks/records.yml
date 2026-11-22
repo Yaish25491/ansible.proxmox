@@ -1,0 +1,20 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Verify native record fields
+  ansible.builtin.assert:
+    that:
+      - item.n is number
+      - item.n | int >= 1
+      - item.t is string
+      - item.t == 'no content' or item.t is match(firewall_log_test_content_pattern) or not (firewall_log_require_content | bool)
+  loop: '{{ firewall_log_records }}'
+  no_log: true
+- name: Verify formatted record pagination and guest ownership
+  ansible.builtin.assert:
+    that:
+      - item.n | int > firewall_log_page_start | default(0) | int
+      - firewall_log_query_vmid | default(0) | int == 0 or item.t is match((firewall_log_query_vmid | string) ~ ' ')
+  loop: '{{ firewall_log_records | selectattr("t", "match", firewall_log_test_content_pattern) | list }}'
+  no_log: true

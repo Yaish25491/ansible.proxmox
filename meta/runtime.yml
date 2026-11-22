@@ -4,6 +4,7 @@ requires_ansible: ">=2.16.0"
 action_groups:
   proxmox:
     - proxmox_api_connection_info
+    - proxmox_firewall_log_info
     - proxmox_group
     - proxmox_group_info
     - proxmox_lxc

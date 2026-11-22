@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise read-only queries
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+  block:
+    - name: Independently verify the designated node
+      ansible.proxmox.proxmox_node_info:
+        node: '{{ proxmox_node }}'
+        gather_subset: []
+      register: firewall_log_node
+    - name: Require an existing designated node and positive page size
+      ansible.builtin.assert:
+        that:
+          - firewall_log_node.nodes | length == 1
+          - firewall_log_test_limit | int > 0
+    - name: Verify node log content and filters
+      ansible.builtin.include_tasks: reads.yml
+    - name: Discover existing guest fixtures
+      ansible.builtin.include_tasks: discover_guests.yml
+    - name: Verify guest log scopes and values
+      ansible.builtin.include_tasks: guests.yml
+      loop: '{{ firewall_log_guests }}'
+      loop_control:
+        loop_var: firewall_guest
+        label: '{{ firewall_guest.type }}'
+    - name: Verify missing selections and rejected inputs
+      ansible.builtin.include_tasks: errors.yml

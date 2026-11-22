@@ -1,0 +1,35 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read an epoch-filtered firewall log page
+  ansible.proxmox.proxmox_firewall_log_info:
+    scope: '{{ firewall_log_query_scope | default("node") }}'
+    node: '{{ firewall_log_query_node | default(proxmox_node) }}'
+    vmid: '{{ firewall_log_query_vmid | default(omit) }}'
+    start: 0
+    limit: 2
+    since: '{{ firewall_log_case.0.since }}'
+    until: '{{ firewall_log_case.0.until }}'
+  check_mode: '{{ firewall_log_case.1 }}'
+  register: firewall_log_filtered
+  no_log: true
+- name: Verify bounded read shape page size and immutability
+  ansible.builtin.assert:
+    that:
+      - firewall_log_filtered is not changed
+      - firewall_log_filtered.firewall_log | length <= 2
+  no_log: true
+- name: Verify filtered record shape and ownership
+  ansible.builtin.include_tasks: records.yml
+  vars:
+    firewall_log_records: '{{ firewall_log_filtered.firewall_log }}'
+- name: Verify each actual timestamp respects inclusive nonzero bounds
+  ansible.builtin.assert:
+    that:
+      - firewall_log_case.0.since | int == 0 or firewall_log_record_epoch | int >= firewall_log_case.0.since | int
+      - firewall_log_case.0.until | int == 0 or firewall_log_record_epoch | int <= firewall_log_case.0.until | int
+  vars:
+    firewall_log_record_epoch: '{{ (item.t.split()[3:5] | join(" ") | ansible.builtin.to_datetime(firewall_log_test_timestamp_format)).timestamp() | int }}'
+  loop: '{{ firewall_log_filtered.firewall_log | selectattr("t", "match", firewall_log_test_content_pattern) | list }}'
+  no_log: true
