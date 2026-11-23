@@ -10,6 +10,8 @@ action_groups:
     - proxmox_lxc_info
     - proxmox_lxc_powerstate
     - proxmox_lxc_powerstate_info
+    - proxmox_lxc_template
+    - proxmox_lxc_template_info
     - proxmox_node_dns
     - proxmox_node_hosts
     - proxmox_node_info

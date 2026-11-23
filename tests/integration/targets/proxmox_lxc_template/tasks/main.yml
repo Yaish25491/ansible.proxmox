@@ -1,0 +1,278 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset LXC template cleanup ownership for this invocation
+  ansible.builtin.set_fact:
+    lxc_template_cleanup_allowed: false
+
+- name: Exercise LXC template conversion and information modules
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Generate a temporary LXC root password
+      ansible.builtin.set_fact:
+        lxc_template_root_password: "{{ lookup('password', '/dev/null length=32') }}"
+      no_log: true
+
+    - name: Verify the LXC template VMID is unused  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_vm_before
+
+    - name: Refuse to overwrite an existing LXC container
+      ansible.builtin.assert:
+        that:
+          - lxc_template_vm_before.lxcs | length == 0
+        fail_msg: The random LXC template VMID is already in use; rerun the target.
+
+    - name: Claim ownership of the LXC template fixture
+      ansible.builtin.set_fact:
+        lxc_template_cleanup_allowed: true
+
+    - name: Create and start the source LXC container  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc: &lxc_template_fixture_args
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+        hostname: "ansible-template-{{ lxc_template_vmid }}"
+        ostemplate: "{{ lxc_template_source }}"
+        password: "{{ lxc_template_root_password }}"
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 1
+        memory: 512
+        ostype: fedora
+        power_cycle: 'on'
+        state: present
+      register: lxc_template_create
+
+    - name: Assert LXC container was created and started
+      ansible.builtin.assert:
+        that:
+          - lxc_template_create is changed
+          - lxc_template_create.task_upid is defined
+
+    - name: Reject conversion of the running LXC container with the default policy  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template:
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_running_rejected
+      ignore_errors: true
+
+    - name: Assert running-container conversion was rejected
+      ansible.builtin.assert:
+        that:
+          - lxc_template_running_rejected is failed
+
+    - name: Verify rejected conversion left the LXC running  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_after_rejection
+
+    - name: Assert rejected conversion did not stop the LXC
+      ansible.builtin.assert:
+        that:
+          - lxc_template_after_rejection.powerstate == 'running'
+
+    - name: Predict LXC template conversion in check mode  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template: &lxc_template_conversion_args
+        vmid: "{{ lxc_template_vmid }}"
+        power_cycle: 'off'
+      check_mode: true
+      register: lxc_template_check
+
+    - name: Assert LXC template conversion is predicted
+      ansible.builtin.assert:
+        that:
+          - lxc_template_check is changed
+          - lxc_template_check.template | bool
+          - lxc_template_check.task_upid is not defined
+
+    - name: Verify check mode left the LXC running  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_after_check
+
+    - name: Assert check mode did not stop the LXC
+      ansible.builtin.assert:
+        that:
+          - lxc_template_after_check.powerstate == 'running'
+
+    - name: Stop the LXC and convert it to a template  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template: *lxc_template_conversion_args
+      register: lxc_template_conversion_result
+
+    - name: Assert template conversion changed the LXC
+      ansible.builtin.assert:
+        that:
+          - lxc_template_conversion_result is changed
+          - lxc_template_conversion_result.template | bool
+          - lxc_template_conversion_result.task_upid is search('^UPID:')
+          - lxc_template_conversion_result.task_upid.split(':')[5] == 'vztemplate'
+          - lxc_template_conversion_result.task_upid.split(':')[6] | int == lxc_template_vmid | int
+
+    - name: Repeat template conversion to verify idempotency  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template: *lxc_template_conversion_args
+      register: lxc_template_conversion_repeat
+
+    - name: Assert repeated template conversion is unchanged
+      ansible.builtin.assert:
+        that:
+          - lxc_template_conversion_repeat is not changed
+          - lxc_template_conversion_repeat.template | bool
+          - lxc_template_conversion_repeat.task_upid is not defined
+
+    - name: Retrieve the converted template by VMID  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_by_vmid
+
+    - name: Assert VMID lookup returns the template
+      ansible.builtin.assert:
+        that:
+          - lxc_template_by_vmid is not changed
+          - lxc_template_by_vmid.templates | length == 1
+          - lxc_template_by_vmid.templates[0].vmid | string == lxc_template_vmid | string
+          - lxc_template_by_vmid.templates[0].template | int == 1
+
+    - name: Retrieve all LXC templates on the node  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template_info:
+        node: "{{ proxmox_node }}"
+      register: lxc_templates_on_node
+
+    - name: Assert the converted LXC is listed
+      ansible.builtin.assert:
+        that:
+          - lxc_templates_on_node is not changed
+          - lxc_templates_on_node.templates | selectattr('vmid', 'equalto', lxc_template_vmid | int) | list | length == 1
+
+    - name: Retrieve a nonexistent template VMID  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_missing_vmid }}"
+      register: missing_lxc_template
+
+    - name: Assert nonexistent VMID returns an empty template list
+      ansible.builtin.assert:
+        that:
+          - missing_lxc_template is not changed
+          - missing_lxc_template.templates == []
+
+    - name: Update the template with the LXC module  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+        memory: 768
+      register: lxc_template_update
+
+    - name: Read the updated template configuration  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_updated_info
+
+    - name: Assert the LXC module can update a template
+      ansible.builtin.assert:
+        that:
+          - lxc_template_update is changed
+          - lxc_template_updated_info.lxcs | length == 1
+          - lxc_template_updated_info.lxcs[0].memory | int == 768
+
+    - name: Delete the LXC template with the LXC module  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      register: lxc_template_delete
+
+    - name: Verify the LXC template was deleted  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_after_delete
+
+    - name: Assert template deletion through proxmox_lxc
+      ansible.builtin.assert:
+        that:
+          - lxc_template_delete is changed
+          - lxc_template_after_delete.templates == []
+
+    - name: Recreate the source LXC without starting it  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc:
+        <<: *lxc_template_fixture_args
+        power_cycle: 'off'
+      register: lxc_stopped_template_create
+
+    - name: Verify the recreated LXC is stopped  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_stopped_template_state
+
+    - name: Assert the stopped fixture is ready
+      ansible.builtin.assert:
+        that:
+          - lxc_stopped_template_create is changed
+          - lxc_stopped_template_state.powerstate == 'stopped'
+
+    - name: Convert the stopped LXC using the default power policy  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template:
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_stopped_template_result
+
+    - name: Read the template created without a stop operation  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_template_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_stopped_template_info
+
+    - name: Assert stopped-container conversion returns its own new UPID
+      ansible.builtin.assert:
+        that:
+          - lxc_stopped_template_result is changed
+          - lxc_stopped_template_result.template | bool
+          - lxc_stopped_template_result.task_upid is search('^UPID:')
+          - lxc_stopped_template_result.task_upid.split(':')[5] == 'vztemplate'
+          - lxc_stopped_template_result.task_upid.split(':')[6] | int == lxc_template_vmid | int
+          - lxc_stopped_template_result.task_upid != lxc_template_conversion_result.task_upid
+          - lxc_stopped_template_info.templates | length == 1
+          - lxc_stopped_template_info.templates[0].template | int == 1
+
+  always:
+    - name: Clean up the owned LXC template fixture  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      register: lxc_template_cleanup_result
+      when:
+        - lxc_template_cleanup_allowed | default(false)
+      ignore_errors: true
+
+    - name: Independently verify the LXC template fixture was removed  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_template_vmid }}"
+      register: lxc_template_cleanup_info
+      when:
+        - lxc_template_cleanup_allowed | default(false)
+      ignore_errors: true
+
+    - name: Assert the owned LXC template fixture was cleaned up
+      ansible.builtin.assert:
+        that:
+          - lxc_template_cleanup_result is succeeded
+          - lxc_template_cleanup_info is succeeded
+          - lxc_template_cleanup_info.lxcs | length == 0
+      when:
+        - lxc_template_cleanup_allowed | default(false)

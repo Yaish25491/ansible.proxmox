@@ -107,6 +107,29 @@ by unit tests and check-mode predictions. Target defaults apply equally to local
 and CI runs; the shared configuration generator and workflow need no host-specific
 configuration.
 
+## LXC template integration tests
+
+The `proxmox_lxc_template` target creates, starts, converts, updates, deletes and
+recreates an LXC container on `proxmox_node`, then cleans it up. Use a disposable
+node and generate the private configuration using the
+[integration test instructions](README.md#integration-tests). The target's
+`rootfs` is hardcoded as `local-lvm:8`, so the node must have an enabled
+`local-lvm` storage that supports container root filesystems.
+
+The default source archive is `fedora-44-default_20260713_amd64.tar.xz`. It must
+already be available as `local:vztmpl/fedora-44-default_20260713_amd64.tar.xz`;
+the `proxmox_lxc` module looks up template archives in Proxmox storage and does
+not download them. To use another archive, set `proxmox_lxc_template` in
+`tests/integration/integration_config.yml` to its filename or volume ID, and
+stage it as `vztmpl` content on that node. This override is also used by the
+`proxmox_lxc` and `proxmox_lxc_powerstate` integration targets.
+
+Set `proxmox_node` to the test node, then run from the collection root:
+
+```bash
+ansible-test integration proxmox_lxc_template
+```
+
 ## Node syslog information integration tests
 
 The `proxmox_node_syslog_info` target makes read-only queries against the
