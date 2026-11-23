@@ -1,0 +1,11 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove the owned LXC snapshot fixture
+  ansible.proxmox.proxmox_lxc: # noqa: args[module]
+    node: "{{ proxmox_node }}"
+    vmid: "{{ lxc_snapshot_vmid }}"
+    power_cycle: 'off'
+    state: absent
+  failed_when: false

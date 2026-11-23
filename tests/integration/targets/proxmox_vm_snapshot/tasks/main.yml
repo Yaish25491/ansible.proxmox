@@ -319,12 +319,23 @@
         vmid: "{{ vmid_snapshot }}"
         snapname: "{{ snapshot_name }}"
         state: rollback
+        start: true
       register: snapshot_rollback
 
     - name: Assert the snapshot rollback was performed
       ansible.builtin.assert:
         that:
           - snapshot_rollback is changed
+
+    - name: Verify the VM started after rollback
+      ansible.proxmox.proxmox_vm_powerstate_info:
+        vmid: "{{ vmid_snapshot }}"
+      register: snapshot_powerstate_after_rollback
+
+    - name: Assert rollback started the VM
+      ansible.builtin.assert:
+        that:
+          - snapshot_powerstate_after_rollback.powerstate == 'running'
 
     - name: Get VM information after rollback  # noqa: args[module]
       ansible.proxmox.proxmox_vm_info:
@@ -357,12 +368,19 @@
         vmid: "{{ vmid_snapshot }}"
         snapname: "{{ snapshot_name }}"
         state: rollback
+        start: false
       register: snapshot_rollback_again
+
+    - name: Verify the VM stayed stopped after rollback
+      ansible.proxmox.proxmox_vm_powerstate_info:
+        vmid: "{{ vmid_snapshot }}"
+      register: snapshot_powerstate_after_rollback_again
 
     - name: Assert rollback follows its non-idempotent contract
       ansible.builtin.assert:
         that:
           - snapshot_rollback_again is changed
+          - snapshot_powerstate_after_rollback_again.powerstate == 'stopped'
 
     - name: Get snapshot information after the repeated rollback
       ansible.proxmox.proxmox_vm_snapshot_info:

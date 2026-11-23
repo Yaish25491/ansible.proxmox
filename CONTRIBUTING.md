@@ -107,46 +107,48 @@ by unit tests and check-mode predictions. Target defaults apply equally to local
 and CI runs; the shared configuration generator and workflow need no host-specific
 configuration.
 
+## Shared LXC integration test prerequisites
+
+The `proxmox_lxc_template`, `proxmox_lxc_clone`, and `proxmox_lxc_snapshot`
+integration targets create LXC containers from
+`fedora-44-default_20260713_amd64.tar.xz` by default. The `proxmox_lxc` module
+looks up an unqualified template in `local:vztmpl` on the selected
+`proxmox_node`; it does not download the archive. Stage the default template on
+that node before running these targets, or container creation fails because the
+OS template does not exist in storage.
+
+To use another template, set `proxmox_lxc_template` in
+`tests/integration/integration_config.yml` to its filename or volume ID. The
+override must already be available as `vztmpl` content on the selected node.
+The same override is also used by the `proxmox_lxc` and
+`proxmox_lxc_powerstate` integration targets.
+
+These targets hardcode `rootfs: local-lvm:8`. Each test node must have an
+enabled `local-lvm` storage that supports container root filesystems and enough
+free space for the 8 GiB fixture volume.
+
 ## LXC template integration tests
 
 The `proxmox_lxc_template` target creates, starts, converts, updates, deletes and
 recreates an LXC container on `proxmox_node`, then cleans it up. Use a disposable
 node and generate the private configuration using the
-[integration test instructions](README.md#integration-tests). The target's
-`rootfs` is hardcoded as `local-lvm:8`, so the node must have an enabled
-`local-lvm` storage that supports container root filesystems.
-
-The default source archive is `fedora-44-default_20260713_amd64.tar.xz`. It must
-already be available as `local:vztmpl/fedora-44-default_20260713_amd64.tar.xz`;
-the `proxmox_lxc` module looks up template archives in Proxmox storage and does
-not download them. To use another archive, set `proxmox_lxc_template` in
-`tests/integration/integration_config.yml` to its filename or volume ID, and
-stage it as `vztmpl` content on that node. This override is also used by the
-`proxmox_lxc` and `proxmox_lxc_powerstate` integration targets.
-
-Set `proxmox_node` to the test node, then run from the collection root:
+[integration test instructions](README.md#integration-tests). See the shared
+[LXC prerequisites](#shared-lxc-integration-test-prerequisites) before running
+the target. Set `proxmox_node` to the test node, then run from the collection
+root:
 
 ```bash
 ansible-test integration proxmox_lxc_template
+```
+
 ## LXC clone integration tests
 
 The `proxmox_lxc_clone` target creates an LXC source container before exercising
-the clone operation. The source creation uses `proxmox_lxc`, which resolves the
-OS template from the configured node's `local:vztmpl` storage; it does not
-download the template. Before running the target, stage
-`fedora-44-default_20260713_amd64.tar.xz` there as a container template. The
-target's `lxc_clone_template` default uses `proxmox_lxc_template` when set and
-otherwise uses that dated filename. Set the override in
-`tests/integration/integration_config.yml` to the filename of a different staged
-template. If the requested template is absent, Proxmox reports that the OS
-template does not exist in storage.
-
-The source container's root disk is hardcoded as `local-lvm:8`, so the node must
-also have `local-lvm` available for container root disks. Generate the private
-integration configuration using the
+the clone operation. See the shared
+[LXC prerequisites](#shared-lxc-integration-test-prerequisites) before running
+the target. Generate the private integration configuration using the
 [integration test instructions](README.md#integration-tests), set
-`proxmox_node` to the node with these storage prerequisites, then run from the
-collection root:
+`proxmox_node` to the test node, then run from the collection root:
 
 ```bash
 ansible-test integration proxmox_lxc_clone
