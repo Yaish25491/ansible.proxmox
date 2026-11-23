@@ -16,6 +16,8 @@ action_groups:
     - proxmox_node_dns
     - proxmox_node_hosts
     - proxmox_node_info
+    - proxmox_node_network
+    - proxmox_node_network_info
     - proxmox_node_syslog_info
     - proxmox_node_time
     - proxmox_user

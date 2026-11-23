@@ -1,0 +1,26 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+proxmox_node: pve01
+# Explicitly designate a disposable node before any staged writes. No reload is performed.
+network_test_allow_staging: false
+network_test_marker: 'Ansible owned network {{ integration_resource_ids | join("-") }}'
+network_test_bridge: 'vmbr{{ integration_resource_ids[0] }}'
+network_test_bond: 'bond{{ integration_resource_ids[0] }}'
+network_test_vlan: '{{ network_test_bridge }}.42'
+network_test_fixtures:
+  - iface: '{{ network_test_bond }}'
+    type: bond
+    slaves: []
+    bond_mode: active-backup
+  - iface: '{{ network_test_bridge }}'
+    type: bridge
+    bridge_ports: []
+    bridge_vlan_aware: true
+    cidr: 192.0.2.1/24
+    cidr6: '2001:db8::1/64'
+  - iface: '{{ network_test_vlan }}'
+    type: vlan
+    vlan_raw_device: '{{ network_test_bridge }}'
+    vlan_id: 42

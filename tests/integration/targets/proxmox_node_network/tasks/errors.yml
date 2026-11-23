@@ -1,0 +1,36 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reject invalid interface requests in both modes
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_invalid_case.0.iface | default(network_test_bridge) }}'
+    type: bridge
+    mtu: '{{ network_invalid_case.0.mtu | default(omit) }}'
+    vlan_id: '{{ network_invalid_case.0.vlan_id | default(omit) }}'
+    reset: '{{ network_invalid_case.0.reset | default(omit) }}'
+    cidr: '{{ network_invalid_case.0.cidr | default(omit) }}'
+  check_mode: '{{ network_invalid_case.1 }}'
+  loop: '{{ [{"iface": "../invalid"}, {"mtu": 1279}, {"vlan_id": 4095}, {"cidr": "192.0.2.1/24", "reset": ["address"]}]
+    | product([false, true]) | list }}'
+  loop_control:
+    loop_var: network_invalid_case
+  register: network_invalid
+  ignore_errors: true
+- name: Require validation failure without writes
+  ansible.builtin.assert:
+    that:
+      - network_invalid.results | rejectattr('failed', 'equalto', true) | list | length == 0
+      - network_invalid.results | selectattr('changed', 'equalto', true) | list | length == 0
+- name: Query a missing node in both modes
+  ansible.proxmox.proxmox_node_network_info:
+    node: ansible-node-does-not-exist
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: network_missing_node
+- name: Require genuine empty missing-node results
+  ansible.builtin.assert:
+    that:
+      - network_missing_node.results | rejectattr('interfaces', 'equalto', []) | list | length == 0
+      - network_missing_node.results | selectattr('changed', 'equalto', true) | list | length == 0

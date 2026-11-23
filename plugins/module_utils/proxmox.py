@@ -227,7 +227,7 @@ class ProxmoxClient:
         if "!" not in token_id:
             return user, token_id
 
-        token_user, token_name = token_id.split("!", 1)
+        token_user, token_name = token_id.rsplit("!", 1)
         if not token_user or not token_name:
             self.module.fail_json(msg="api_token_id must use the format user@realm!token or token")
         if user and user != token_user:

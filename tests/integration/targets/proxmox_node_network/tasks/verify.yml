@@ -1,0 +1,21 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Verify the selected fixture type ownership and native values
+  ansible.builtin.assert:
+    that:
+      - network_observation is not changed
+      - network_observation.interfaces | length == 1
+      - network_observation.interfaces[0].iface == network_fixture.iface
+      - network_observation.interfaces[0].type == network_fixture.type
+      - network_observation.interfaces[0].comments | trim == network_test_marker
+      - network_observation.interfaces[0].autostart | default(0) | int == 0
+      - network_fixture.type != 'bond' or network_observation.interfaces[0].bond_mode == 'active-backup'
+      - network_fixture.type != 'bond' or network_observation.interfaces[0].slaves | default('') | trim == ''
+      - network_fixture.type != 'bridge' or network_observation.interfaces[0].bridge_vlan_aware | int == 1
+      - network_fixture.type != 'bridge' or network_observation.interfaces[0].bridge_ports | default('') | trim == ''
+      - network_fixture.type != 'bridge' or network_observation.interfaces[0].address == '192.0.2.1'
+      - network_fixture.type != 'bridge' or network_observation.interfaces[0].cidr6 == '2001:db8::1/64'
+      - network_fixture.type != 'vlan' or network_observation.interfaces[0]['vlan-raw-device'] == network_test_bridge
+      - network_fixture.type != 'vlan' or network_observation.interfaces[0]['vlan-id'] | int == 42

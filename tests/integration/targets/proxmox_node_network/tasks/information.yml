@@ -1,0 +1,36 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read each Linux type in both modes
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    type: '{{ network_info_case.0 }}'
+  check_mode: '{{ network_info_case.1 }}'
+  loop: '{{ ["bridge", "bond", "vlan", "eth"] | product([false, true]) | list }}'
+  loop_control:
+    loop_var: network_info_case
+  register: network_types
+  no_log: true
+- name: Verify each filter returned only the selected type
+  ansible.builtin.assert:
+    that:
+      - item is not changed
+      - item.interfaces | rejectattr('type', 'equalto', item.network_info_case.0) | list | length == 0
+  loop: '{{ network_types.results }}'
+  no_log: true
+- name: Query a known bridge through the wrong type and a checked unused selector
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_info_case.0.iface }}'
+    type: '{{ network_info_case.0.type | default(omit) }}'
+  check_mode: '{{ network_info_case.1 }}'
+  loop: '{{ [{"iface": network_test_bridge, "type": "eth"}, {"iface": "vlan" ~ integration_resource_ids[1]}] | product([false, true]) | list }}'
+  loop_control:
+    loop_var: network_info_case
+  register: network_empty
+- name: Verify missing and wrong-type selections are unchanged and empty
+  ansible.builtin.assert:
+    that:
+      - network_empty.results | selectattr('changed', 'equalto', true) | list | length == 0
+      - network_empty.results | rejectattr('interfaces', 'equalto', []) | list | length == 0

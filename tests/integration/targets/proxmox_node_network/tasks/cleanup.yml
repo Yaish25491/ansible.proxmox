@@ -1,0 +1,26 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Attempt removal of each owned fixture in dependency order
+  ansible.builtin.include_tasks: remove.yml
+  loop: '{{ network_test_owned | reverse | list }}'
+  loop_control:
+    loop_var: network_remove_iface
+- name: Independently list configuration after every cleanup attempt
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+  register: network_cleanup_final
+  ignore_errors: true
+  no_log: true
+- name: Require independent absence of every owned fixture
+  ansible.builtin.assert:
+    that:
+      - network_cleanup_final is succeeded
+      - network_cleanup_final.interfaces | map(attribute='iface') | intersect(network_test_owned) | length == 0
+  no_log: true
+- name: Require every cleanup operation and verification to have succeeded
+  ansible.builtin.assert:
+    that:
+      - network_cleanup_errors | default([]) | length == 0
+    fail_msg: One or more owned network fixtures could not be safely removed or verified. Inspect the cleanup failures before further staging.

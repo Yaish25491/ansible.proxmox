@@ -1,0 +1,84 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict fixture creation without writing
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+    type: '{{ network_fixture.type }}'
+    bridge_ports: '{{ network_fixture.bridge_ports | default(omit) }}'
+    bridge_vlan_aware: '{{ network_fixture.bridge_vlan_aware | default(omit) }}'
+    slaves: '{{ network_fixture.slaves | default(omit) }}'
+    bond_mode: '{{ network_fixture.bond_mode | default(omit) }}'
+    vlan_raw_device: '{{ network_fixture.vlan_raw_device | default(omit) }}'
+    vlan_id: '{{ network_fixture.vlan_id | default(omit) }}'
+    cidr: '{{ network_fixture.cidr | default(omit) }}'
+    cidr6: '{{ network_fixture.cidr6 | default(omit) }}'
+    comments: '{{ network_test_marker }}'
+    autostart: false
+  check_mode: true
+  register: network_predicted
+- name: Independently verify prediction did not create a fixture
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+  register: network_before
+- name: Verify predicted creation and actual absence
+  ansible.builtin.assert:
+    that:
+      - network_predicted is changed
+      - network_before.interfaces == []
+- name: Create and repeat the owned fixture
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+    type: '{{ network_fixture.type }}'
+    bridge_ports: '{{ network_fixture.bridge_ports | default(omit) }}'
+    bridge_vlan_aware: '{{ network_fixture.bridge_vlan_aware | default(omit) }}'
+    slaves: '{{ network_fixture.slaves | default(omit) }}'
+    bond_mode: '{{ network_fixture.bond_mode | default(omit) }}'
+    vlan_raw_device: '{{ network_fixture.vlan_raw_device | default(omit) }}'
+    vlan_id: '{{ network_fixture.vlan_id | default(omit) }}'
+    cidr: '{{ network_fixture.cidr | default(omit) }}'
+    cidr6: '{{ network_fixture.cidr6 | default(omit) }}'
+    comments: '{{ network_test_marker }}'
+    autostart: false
+  loop: [first, repeat]
+  register: network_created
+- name: Independently verify exact type comment and native observations in both modes
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+    type: '{{ network_fixture.type }}'
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: network_observed
+- name: Verify fixture lifecycle and immutable reads
+  ansible.builtin.assert:
+    that:
+      - network_created.results[0] is changed
+      - network_created.results[1] is not changed
+      - network_observed.results | selectattr('changed', 'equalto', true) | list | length == 0
+- name: Verify every native field in each observation mode
+  ansible.builtin.include_tasks: verify.yml
+  loop: '{{ network_observed.results }}'
+  loop_control:
+    loop_var: network_observation
+- name: Predict deletion without removing the fixture
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+    state: absent
+  check_mode: true
+  register: network_delete_prediction
+- name: Independently verify the predicted deletion did not execute
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_fixture.iface }}'
+  register: network_after_prediction
+- name: Require check mode immutability
+  ansible.builtin.assert:
+    that:
+      - network_delete_prediction is changed
+      - network_after_prediction.interfaces | length == 1

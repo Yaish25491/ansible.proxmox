@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the candidate before touching it
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_remove_iface }}'
+  register: network_cleanup_before
+  ignore_errors: true
+- name: Resolve the original fixture type
+  ansible.builtin.set_fact:
+    network_cleanup_expected_type: '{{ (network_test_fixtures | selectattr("iface", "equalto", network_remove_iface) | first).type }}'
+- name: Check current ownership rather than deleting a collision
+  ansible.builtin.set_fact:
+    network_cleanup_can_remove: >-
+      {{ network_cleanup_before is succeeded and (network_cleanup_before.interfaces | length == 0 or
+         (network_cleanup_before.interfaces[0].type == network_cleanup_expected_type and
+          network_cleanup_before.interfaces[0].comments | default('') | trim in [network_test_marker, network_test_marker ~ ' updated'])) }}
+- name: Remove only the owned configuration
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_remove_iface }}'
+    state: absent
+  register: network_cleanup_removed
+  ignore_errors: true
+  when: network_cleanup_can_remove | bool
+- name: Independently verify each removal
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_remove_iface }}'
+  register: network_cleanup_check
+  ignore_errors: true
+- name: Remember failures while continuing with remaining fixtures
+  ansible.builtin.set_fact:
+    network_cleanup_errors: '{{ network_cleanup_errors | default([]) + [network_remove_iface] }}'
+  when: >-
+    not network_cleanup_can_remove | bool or network_cleanup_removed is failed or network_cleanup_check is failed or
+    network_cleanup_check.interfaces | default([{}]) | length > 0

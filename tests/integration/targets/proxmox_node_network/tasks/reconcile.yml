@@ -1,0 +1,79 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Set owned bond mode and hash policy and repeat
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bond }}'
+    bond_mode: balance-xor
+    bond_xmit_hash_policy: layer2+3
+  loop: [first, repeat]
+  register: network_bond_updated
+- name: Independently verify bond reconciliation
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bond }}'
+  register: network_bond_info
+- name: Require meaningful bond values and no-op behavior
+  ansible.builtin.assert:
+    that:
+      - network_bond_updated.results[0] is changed
+      - network_bond_updated.results[1] is not changed
+      - network_bond_info.interfaces[0].bond_mode == 'balance-xor'
+      - network_bond_info.interfaces[0].bond_xmit_hash_policy == 'layer2+3'
+- name: Assign only the owned empty bond as the owned bridge port and repeat
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    bridge_ports: ['{{ network_test_bond }}']
+  loop: [first, repeat]
+  register: network_ports_updated
+- name: Independently verify owned topology
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_ports_info
+- name: Require exact ports without addressing loss
+  ansible.builtin.assert:
+    that:
+      - network_ports_updated.results[0] is changed
+      - network_ports_updated.results[1] is not changed
+      - network_ports_info.interfaces[0].bridge_ports.split() == [network_test_bond]
+      - network_ports_info.interfaces[0].cidr == '192.0.2.1/24'
+- name: Predict removing all bridge ports
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    bridge_ports: []
+  check_mode: true
+  register: network_ports_prediction
+- name: Independently verify the predicted clear did not execute
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_ports_before
+- name: Require authoritative empty-list prediction and actual immutability
+  ansible.builtin.assert:
+    that:
+      - network_ports_prediction is changed
+      - network_ports_prediction.interface.bridge_ports == ''
+      - network_ports_before.interfaces[0].bridge_ports.split() == [network_test_bond]
+- name: Clear only the owned bridge ports and repeat
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    bridge_ports: []
+  loop: [first, repeat]
+  register: network_ports_cleared
+- name: Independently verify port removal
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_ports_clear_info
+- name: Require empty ports and no-op behavior
+  ansible.builtin.assert:
+    that:
+      - network_ports_cleared.results[0] is changed
+      - network_ports_cleared.results[1] is not changed
+      - network_ports_clear_info.interfaces[0].bridge_ports | default('') | trim == ''

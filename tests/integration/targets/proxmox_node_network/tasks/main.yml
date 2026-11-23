@@ -1,0 +1,75 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset fixture ownership for this invocation
+  ansible.builtin.set_fact:
+    network_test_owned: []
+    network_cleanup_errors: []
+- name: Exercise staged interface configuration and independent reads
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+  block:
+    - name: Independently verify the designated node
+      ansible.proxmox.proxmox_node_info:
+        node: '{{ proxmox_node }}'
+        gather_subset: []
+      register: network_test_node
+    - name: Require a real node
+      ansible.builtin.assert:
+        that:
+          - network_test_node.nodes | length == 1
+    - name: Read network configuration in normal and check mode
+      ansible.proxmox.proxmox_node_network_info:
+        node: '{{ proxmox_node }}'
+      check_mode: '{{ item }}'
+      loop: [false, true]
+      register: network_test_initial
+      no_log: true
+    - name: Verify read-only observations
+      ansible.builtin.assert:
+        that:
+          - network_test_initial.results | selectattr('changed', 'equalto', true) | list | length == 0
+      no_log: true
+    - name: Verify rejected inputs and missing selections
+      ansible.builtin.include_tasks: errors.yml
+    - name: Require explicit staging authorization for a disposable node
+      ansible.builtin.assert:
+        that:
+          - network_test_allow_staging | bool
+        fail_msg: >-
+          Full integration writes staged node network configuration. Set network_test_allow_staging=true only for a designated disposable node
+          with independent recovery access and no concurrent network writers. No reload or node-wide discard is performed.
+    - name: Require unused fixture identifiers before claiming ownership
+      ansible.builtin.assert:
+        that:
+          - >-
+            network_test_initial.results[0].interfaces | map(attribute='iface') |
+            intersect((network_test_fixtures | map(attribute='iface') | list) + ['vlan' ~ integration_resource_ids[1]]) | length == 0
+      no_log: true
+    - name: Claim only the checked unused identifiers before attempted writes
+      ansible.builtin.set_fact:
+        network_test_owned: '{{ network_test_fixtures | map(attribute="iface") | list }}'
+    - name: Exercise owned bond bridge and VLAN configurations
+      ansible.builtin.include_tasks: fixture.yml
+      loop: '{{ network_test_fixtures }}'
+      loop_control:
+        loop_var: network_fixture
+        label: '{{ network_fixture.type }}'
+    - name: Verify all type filters and wrong or missing interface selections
+      ansible.builtin.include_tasks: information.yml
+    - name: Verify value reconciliation without disturbing the parent VLAN
+      ansible.builtin.include_tasks: updates.yml
+  always:
+    - name: Remove and independently verify only owned staged fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: network_test_owned | length > 0

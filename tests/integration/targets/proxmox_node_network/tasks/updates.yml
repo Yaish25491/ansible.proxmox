@@ -1,0 +1,115 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Verify protected deletion of an owned parent with an owned VLAN child
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    state: absent
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: network_parent_rejection
+  ignore_errors: true
+- name: Require every referenced-parent deletion to fail without changes
+  ansible.builtin.assert:
+    that:
+      - network_parent_rejection.results | rejectattr('failed', 'equalto', true) | list | length == 0
+      - network_parent_rejection.results | selectattr('changed', 'equalto', true) | list | length == 0
+- name: Predict a comment-only change on the dual-stack bridge
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    comments: '{{ network_test_marker }} updated'
+  check_mode: true
+  register: network_comment_prediction
+- name: Independently verify original comment after prediction
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_preupdate
+- name: Require original state and a meaningful prediction
+  ansible.builtin.assert:
+    that:
+      - network_comment_prediction is changed
+      - network_preupdate.interfaces[0].comments | trim == network_test_marker
+- name: Update only the owned bridge comment and repeat
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    comments: '{{ network_test_marker }} updated'
+  loop: [first, repeat]
+  register: network_updated
+- name: Independently verify both IP families survived a comment-only update
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_dualstack
+- name: Require exact addressing and idempotency
+  ansible.builtin.assert:
+    that:
+      - network_updated.results[0] is changed
+      - network_updated.results[1] is not changed
+      - network_dualstack.interfaces[0].address == '192.0.2.1'
+      - network_dualstack.interfaces[0].netmask | string in ['24', '255.255.255.0']
+      - network_dualstack.interfaces[0].cidr6 == '2001:db8::1/64'
+      - network_dualstack.interfaces[0].method == 'static'
+      - network_dualstack.interfaces[0].method6 == 'static'
+      - network_dualstack.interfaces[0].bridge_vlan_aware | int == 1
+- name: Predict clearing IPv6 while preserving IPv4
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    cidr6: ''
+  check_mode: true
+  register: network_clear_prediction
+- name: Independently read both families after the prediction
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_before_clear
+- name: Require consistent prediction without changing actual addressing
+  ansible.builtin.assert:
+    that:
+      - network_clear_prediction is changed
+      - network_clear_prediction.interface.method6 == 'manual'
+      - network_clear_prediction.interface.get('cidr6') == none
+      - network_clear_prediction.interface.cidr == '192.0.2.1/24'
+      - network_before_clear.interfaces[0].cidr6 == '2001:db8::1/64'
+- name: Clear IPv6 while preserving IPv4
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    cidr6: ''
+  loop: [first, repeat]
+  register: network_cleared
+- name: Independently verify the explicit clear
+  ansible.proxmox.proxmox_node_network_info:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+  register: network_clear_info
+- name: Require explicit clear and remaining IPv4 configuration
+  ansible.builtin.assert:
+    that:
+      - network_cleared.results[0] is changed
+      - network_cleared.results[1] is not changed
+      - network_clear_info.interfaces[0].get('address6', '') == ''
+      - network_clear_info.interfaces[0].get('netmask6') == none
+      - network_clear_info.interfaces[0].address == '192.0.2.1'
+      - network_clear_info.interfaces[0].method == 'static'
+- name: Reject a bridge VLAN dependency cycle in both modes
+  ansible.proxmox.proxmox_node_network:
+    node: '{{ proxmox_node }}'
+    iface: '{{ network_test_bridge }}'
+    bridge_ports: ['{{ network_test_vlan }}']
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: network_cycle
+  ignore_errors: true
+- name: Verify cycle rejection without any configuration change
+  ansible.builtin.assert:
+    that:
+      - network_cycle.results | rejectattr('failed', 'equalto', true) | list | length == 0
+      - network_cycle.results | selectattr('changed', 'equalto', true) | list | length == 0
+- name: Verify owned ports mode changes and explicit empty values
+  ansible.builtin.include_tasks: reconcile.yml

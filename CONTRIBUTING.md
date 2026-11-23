@@ -200,3 +200,35 @@ list-all and selected information reads in check mode, creation/deletion
 predictions, removal of a user's last group, deletion of a populated group while
 preserving member accounts, and rejection of reserved group path segments.
 Run only with explicit authorization to create and remove these test identities.
+
+
+## Node network configuration integration tests
+
+The `proxmox_node_network` target tests staged interface configuration with
+`proxmox_node_network_info`. Run `ansible-test integration proxmox_node_network`
+using the shared private configuration. Set `network_test_allow_staging: true`
+only for an explicitly designated disposable `proxmox_node` with independent
+recovery access and no concurrent network writers. Without that designation the
+target performs reads and invalid-input checks, then fails with a prerequisite
+message before any write. Protected CI approval alone does not set this flag.
+
+Fixtures are uniquely named, ownership-checked portless Linux bridges, empty
+bonds and a VLAN on the owned bridge, with documentation-range addresses and
+no autostart. Native API writes stage the node-wide interfaces file; they do not
+activate networking. The target never reloads, discards pending changes, directly targets
+an existing NIC or management bridge. Cleanup runs in `always`, checks
+ownership again, removes children before parents, continues after errors, and
+independently verifies removal and operation success. It does not discard other
+pending configuration or promise byte-for-byte restoration of native formatting.
+
+Coverage includes creation/deletion predictions, lifecycle/no-op behavior,
+independent normal/check reads with native field assertions in each mode,
+Linux type filters and missing/wrong-type selectors, dual-stack preservation and
+consistent method/CIDR predictions, explicit address and port clearing, owned
+bond mode/hash-policy reconciliation, cycle and referenced-parent rejection.
+Cleanup checks the original fixture type as well as its unique ownership marker.
+Physical Ethernet writes and live activation are not performed by this target;
+Ethernet configuration and hardware/stanza distinctions are unit tested. Full
+Ethernet/live-activation coverage needs separate designated resources and a
+recovery procedure. The API cannot set Linux bridge STP; existing STP settings
+are preserved and can be observed through the info module.
