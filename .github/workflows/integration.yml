@@ -77,19 +77,20 @@ jobs:
           ANSIBLE_VERSION: ${{ matrix.ansible_version }}
         run: |
           set -euo pipefail
-          rm -rf ~/venv-proxmox
-          python3.12 -m venv ~/venv-proxmox
-          source ~/venv-proxmox/bin/activate
+          integration_venv="$(mktemp -d "${RUNNER_TEMP}/proxmox-venv.XXXXXX")"
+          printf 'INTEGRATION_VENV=%s\n' "${integration_venv}" >> "${GITHUB_ENV}"
+          python3.12 -m venv "${integration_venv}"
+          source "${integration_venv}/bin/activate"
           python -m pip install "git+https://github.com/ansible/ansible.git@${ANSIBLE_VERSION}"
 
       - name: Install collection dependencies
         run: |
-          source ~/venv-proxmox/bin/activate
+          source "${INTEGRATION_VENV}/bin/activate"
           python -m pip install -r tests/integration/requirements.txt
 
       - name: Generate integration config
         run: |
-          source ~/venv-proxmox/bin/activate
+          source "${INTEGRATION_VENV}/bin/activate"
           make generate-integration-config
         env:
           PROXMOX_HOST: ${{ secrets.PROXMOX_HOST }}
@@ -106,7 +107,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          source ~/venv-proxmox/bin/activate
+          source "${INTEGRATION_VENV}/bin/activate"
           if [[ "${EVENT_NAME}" == 'pull_request_target' ]]; then
             git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
             git branch -f "${BASE_REF}" "origin/${BASE_REF}"
@@ -138,7 +139,7 @@ jobs:
           ANSIBLE_VERSION: ${{ matrix.ansible_version }}
         run: |
           set -euo pipefail
-          source ~/venv-proxmox/bin/activate
+          source "${INTEGRATION_VENV}/bin/activate"
           mapfile -t targets < targets.txt
           if (( ${#targets[@]} == 0 )); then
             echo "No integration targets selected."
@@ -152,7 +153,9 @@ jobs:
       - name: Clean integration files
         if: always()
         run: |
-          rm -rf ~/venv-proxmox
+          if [[ -n "${INTEGRATION_VENV:-}" ]]; then
+            rm -rf -- "${INTEGRATION_VENV}"
+          fi
           rm -f tests/integration/integration_config.yml targets.txt "${RUNNER_TEMP}/ansible-changed-files.txt"
 
   check:
