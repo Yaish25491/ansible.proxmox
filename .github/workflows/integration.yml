@@ -88,18 +88,6 @@ jobs:
           source "${INTEGRATION_VENV}/bin/activate"
           python -m pip install -r tests/integration/requirements.txt
 
-      - name: Generate integration config
-        run: |
-          source "${INTEGRATION_VENV}/bin/activate"
-          make generate-integration-config
-        env:
-          PROXMOX_HOST: ${{ secrets.PROXMOX_HOST }}
-          PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
-          PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
-          PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
-          PROXMOX_VALIDATE_CERTS: ${{ secrets.PROXMOX_VALIDATE_CERTS }}
-          PROXMOX_CA_PATH: ${{ secrets.PROXMOX_CA_PATH }}
-
       - name: List integration targets
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -133,18 +121,70 @@ jobs:
           fi
           cat targets.txt
 
+      - name: Run password-authenticated TFA integration tests
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}
+          ANSIBLE_VERSION: ${{ matrix.ansible_version }}
+          PROXMOX_HOST: ${{ secrets.PROXMOX_HOST }}
+          PROXMOX_USER: root@pam
+          PROXMOX_PASSWORD: ${{ secrets.PROXMOX_TFA_ROOT_PASSWORD }}
+          PROXMOX_TOKEN_ID: ''
+          PROXMOX_TOKEN_SECRET: ''
+          PROXMOX_TFA_ALLOW_ENROLLMENT: ${{ vars.PROXMOX_TFA_ALLOW_ENROLLMENT }}
+          PROXMOX_VALIDATE_CERTS: ${{ secrets.PROXMOX_VALIDATE_CERTS }}
+          PROXMOX_CA_PATH: ${{ secrets.PROXMOX_CA_PATH }}
+        run: |
+          set -euo pipefail
+          selected=false
+          while IFS= read -r target; do
+            if [[ "${target}" == proxmox_tfa ]]; then
+              selected=true
+            fi
+          done < targets.txt
+          if [[ "${selected}" != true ]]; then
+            exit 0
+          fi
+          if [[ -z "${PROXMOX_PASSWORD}" || "${PROXMOX_TFA_ALLOW_ENROLLMENT}" != true ]]; then
+            echo "::error::TFA enrollment requires the approved PROXMOX_TFA_ROOT_PASSWORD repository secret."
+            echo "Set repository variable PROXMOX_TFA_ALLOW_ENROLLMENT=true after authorizing owned fixtures."
+            echo "Job approval alone does not supply these prerequisites."
+            exit 1
+          fi
+          source "${INTEGRATION_VENV}/bin/activate"
+          umask 077
+          make -B generate-integration-config
+          make integration \
+            ANSIBLE_CORE_SPEC="git+https://github.com/ansible/ansible.git@${ANSIBLE_VERSION}" \
+            INTEGRATION_TARGETS="proxmox_tfa" \
+            CLI_ARGS="-v --color"
+
       - name: Run integration tests
         env:
           ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}
           ANSIBLE_VERSION: ${{ matrix.ansible_version }}
+          PROXMOX_HOST: ${{ secrets.PROXMOX_HOST }}
+          PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
+          PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
+          PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
+          PROXMOX_VALIDATE_CERTS: ${{ secrets.PROXMOX_VALIDATE_CERTS }}
+          PROXMOX_CA_PATH: ${{ secrets.PROXMOX_CA_PATH }}
+          PROXMOX_PASSWORD: ''
+          PROXMOX_TFA_ALLOW_ENROLLMENT: 'false'
         run: |
           set -euo pipefail
           source "${INTEGRATION_VENV}/bin/activate"
-          mapfile -t targets < targets.txt
+          targets=()
+          while IFS= read -r target; do
+            if [[ -n "${target}" && "${target}" != proxmox_tfa ]]; then
+              targets+=("${target}")
+            fi
+          done < targets.txt
           if (( ${#targets[@]} == 0 )); then
             echo "No integration targets selected."
             exit 0
           fi
+          umask 077
+          make -B generate-integration-config
           make integration \
             ANSIBLE_CORE_SPEC="git+https://github.com/ansible/ansible.git@${ANSIBLE_VERSION}" \
             INTEGRATION_TARGETS="${targets[*]}" \

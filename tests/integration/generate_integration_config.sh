@@ -24,12 +24,18 @@ export PROXMOX_USER="${PROXMOX_USER:-}"
 export PROXMOX_PASSWORD="${PROXMOX_PASSWORD:-}"
 export PROXMOX_TOKEN_ID="${PROXMOX_TOKEN_ID:-}"
 export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-}"
+if [[ "${PROXMOX_TFA_ALLOW_ENROLLMENT:-false}" != true && "${PROXMOX_TFA_ALLOW_ENROLLMENT:-false}" != false ]]; then
+    echo "PROXMOX_TFA_ALLOW_ENROLLMENT must be true or false." >&2
+    exit 1
+fi
+export PROXMOX_TFA_ALLOW_ENROLLMENT="${PROXMOX_TFA_ALLOW_ENROLLMENT:-false}"
 export PROXMOX_VALIDATE_CERTS="${PROXMOX_VALIDATE_CERTS:-true}"
 
 python3 - "${TEMPLATE}" "${OUTPUT}" <<'PY'
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 variables = (
@@ -43,12 +49,9 @@ variables = (
 )
 
 template = Path(sys.argv[1]).read_text(encoding="utf-8")
-for variable in variables:
-    template = template.replace("${%s}" % variable, json.dumps(os.environ[variable]))
-
-template = template.replace(
-    "${PROXMOX_VALIDATE_CERTS}",
-    "true" if os.environ["PROXMOX_VALIDATE_CERTS"].lower() in ("1", "true", "yes", "on") else "false",
-)
+values = {variable: json.dumps(os.environ[variable]) for variable in variables}
+values["PROXMOX_VALIDATE_CERTS"] = "true" if os.environ["PROXMOX_VALIDATE_CERTS"].lower() in ("1", "true", "yes", "on") else "false"
+values["PROXMOX_TFA_ALLOW_ENROLLMENT"] = os.environ["PROXMOX_TFA_ALLOW_ENROLLMENT"]
+template = re.sub(r"\$\{([A-Z_]+)\}", lambda match: values[match.group(1)], template)
 Path(sys.argv[2]).write_text(template, encoding="utf-8")
 PY

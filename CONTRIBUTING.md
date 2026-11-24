@@ -2,6 +2,37 @@
 
 Refer to the [Ansible community guide](https://docs.ansible.com/projects/ansible/devel/community/index.html).
 
+## TFA integration CI prerequisite
+
+TFA factor mutations require password authentication. When `proxmox_tfa` is a
+selected integration target, the protected workflow runs it separately with
+`root@pam` and the repository secret `PROXMOX_TFA_ROOT_PASSWORD`. It requires
+the repository variable `PROXMOX_TFA_ALLOW_ENROLLMENT=true` as explicit
+authorization for the target's owned user, realm and factor fixtures. Missing
+prerequisites fail the selected TFA step before test execution.
+
+For a PR adding the TFA target, use this order:
+
+1. Land this workflow and configuration-generator wiring on `main` first.
+   `pull_request_target` uses the base repository's default-branch workflow;
+   approving a run does not load workflow changes from the PR head.
+2. An authorized administrator configures the password secret for the designated
+   test endpoint and enables the enrollment variable. Do not place passwords
+   in pull requests, comments or logs.
+3. Start a fresh PR integration run using the updated workflow, then manually
+   approve it after reviewing the code that will run with those credentials.
+
+Other selected targets retain token authentication and run once. The workflow
+forces configuration regeneration at each authentication transition so Make's
+cached output cannot reuse root credentials for unrelated targets. It preserves
+the existing per-job Python environment and protected approval gate. No CI
+credential or enrollment authorization is created by this code change.
+
+Local generated configurations accept `PROXMOX_TFA_ALLOW_ENROLLMENT=true` or
+`false` and default to false. TFA fixtures must also be explicitly authorized
+before running the target locally. Hardware/provider prerequisites remain the
+responsibility of the TFA target documentation.
+
 ## Node DNS integration tests
 
 The `proxmox_node_dns` target tests DNS configuration together with
