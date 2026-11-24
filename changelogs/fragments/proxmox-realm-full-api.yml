@@ -2,16 +2,16 @@ minor_changes:
   - >-
     proxmox_realm - add LDAP/AD user and group synchronization with all native
     options, dry runs and asynchronous task results
-    (https://github.com/ansible-collections/ansible.proxmox/pull/XXXX).
+    (https://github.com/ansible-collections/ansible.proxmox/pull/50).
   - >-
     proxmox_realm - support legacy LDAP and realm TFA options, stored bind-password
     removal, and opt-in protected realm configuration and built-in reset
-    (https://github.com/ansible-collections/ansible.proxmox/pull/XXXX).
+    (https://github.com/ansible-collections/ansible.proxmox/pull/50).
   - >-
     proxmox_realm_info - return nonsecret realm TFA metadata without API keys
-    (https://github.com/ansible-collections/ansible.proxmox/pull/XXXX).
+    (https://github.com/ansible-collections/ansible.proxmox/pull/50).
 bugfixes:
   - >-
     module_utils.proxmox_task - preserve completed mutations as changed and retain
     task details when an asynchronous task fails or times out
-    (https://github.com/ansible-collections/ansible.proxmox/pull/XXXX).
+    (https://github.com/ansible-collections/ansible.proxmox/pull/50).
