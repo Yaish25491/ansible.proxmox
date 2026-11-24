@@ -101,6 +101,26 @@ class ProxmoxBase(ABC):
         self.client.mark_changed()
         return result
 
+    @staticmethod
+    def _parse_formatted_options(value):
+        """Parse a Proxmox property string without interpreting field values.
+
+        Args:
+            value: Comma-separated API string, such as 'virtio,bridge=vmbr0'.
+
+        Returns:
+            String fields by key; unkeyed fields map to an empty string.
+            Empty or non-string input produces an empty mapping.
+        """
+        if not isinstance(value, str) or not value:
+            return {}
+        options = {}
+        for item in value.split(","):
+            key, separator, field_value = item.partition("=")
+            if key.strip():
+                options[key.strip()] = field_value.strip() if separator else ""
+        return options
+
     def prepare_result(self, changed, resource=None, **values):
         """Assemble result data using this handler's resource key.
 

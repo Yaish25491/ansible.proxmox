@@ -68,7 +68,7 @@ class ProxmoxTask(ProxmoxBase):
 
         while status.get("status") != "stopped":
             if deadline is not None and time.monotonic() >= deadline:
-                self.module.fail_json(msg="Timed out waiting for Proxmox task", task=upid, timeout=timeout)
+                self.client.fail_request("Timed out waiting for Proxmox task", task=upid, timeout=timeout)
             time.sleep(poll_interval)
             status = self.call_api("Retrieving Proxmox task status", endpoint.get)
 
@@ -90,7 +90,7 @@ class ProxmoxTask(ProxmoxBase):
                     failure["msg"] = "Proxmox task failed: {0}. Task log: {1}".format(
                         exit_status, " | ".join(task_log[-5:])
                     )
-            self.module.fail_json(**failure)
+            self.client.fail_request(failure.pop("msg"), **failure)
         return status
 
     @staticmethod

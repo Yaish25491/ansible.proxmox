@@ -1,0 +1,37 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Allocate a directory owned by this test invocation
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ansible-realm-ldap-
+  register: realm_ldap_directory
+- name: Initialize the synthetic directory without real identities or credentials
+  ansible.builtin.copy:
+    dest: '{{ realm_ldap_directory.path }}/entries.json'
+    content: '[]'
+    mode: '0600'
+- name: Start the read-only LDAP fixture on an ephemeral controller port
+  ansible.builtin.command:
+    argv:
+      - '{{ ansible_playbook_python }}'
+      - '{{ role_path }}/files/realm_ldap_server.py'
+      - start
+      - --directory
+      - '{{ realm_ldap_directory.path }}'
+      - --api-host
+      - '{{ proxmox_api_host }}'
+      - --advertise-host
+      - '{{ realm_test_ldap_advertise_host }}'
+  register: realm_ldap_started
+  changed_when: true
+- name: Retain the owned service address for the native Proxmox worker
+  ansible.builtin.set_fact:
+    realm_ldap_address: '{{ realm_ldap_started.stdout | from_json }}'
+- name: Exercise the native worker for both supported directory providers
+  ansible.builtin.include_tasks: sync_provider.yml
+  loop: '{{ realm_sync_fixtures }}'
+  loop_control:
+    loop_var: realm_sync_fixture
+    label: '{{ realm_sync_fixture.realm }}'

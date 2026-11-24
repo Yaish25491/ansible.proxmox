@@ -31,11 +31,15 @@ class ModuleFailure(Exception):
 
 
 class FakeClient:
-    def __init__(self, api):
+    def __init__(self, api, module):
         self.api = api
+        self.module = module
         self.validate_pve_permissions = Mock()
         self.connection_options = Mock(return_value={"user": "root@pam"})
         self.mark_changed = Mock()
+
+    def fail_request(self, operation, **details):
+        self.module.fail_json(msg=operation, **details)
 
 
 def make_template_module(params=None):
@@ -54,7 +58,7 @@ def make_template_module(params=None):
         check_mode=False,
         fail_json=Mock(side_effect=ModuleFailure),
     )
-    client = FakeClient(Mock())
+    client = FakeClient(Mock(), module)
     client.api.nodes.return_value.tasks.get.side_effect = [[], [{"upid": CONVERSION_UPID}]]
     resource = SimpleNamespace(template=SimpleNamespace(post=Mock()))
     handler = ProxmoxLxcTemplateModule(module, client=client)
@@ -83,7 +87,7 @@ def make_template_info_module(params=None):
         check_mode=False,
         fail_json=Mock(side_effect=ModuleFailure),
     )
-    client = FakeClient(Mock())
+    client = FakeClient(Mock(), module)
     handler = ProxmoxLxcTemplateInfoModule(module, client=client)
     handler.call_api = Mock()
     handler.validate_proxmox_resource_exist = Mock()
