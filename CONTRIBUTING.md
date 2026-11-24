@@ -109,8 +109,8 @@ configuration.
 
 ## Shared LXC integration test prerequisites
 
-The `proxmox_lxc_template`, `proxmox_lxc_clone`, and `proxmox_lxc_snapshot`
-integration targets create LXC containers from
+The `proxmox_lxc_template`, `proxmox_lxc_clone`, `proxmox_lxc_snapshot`, and
+`proxmox_lxc_migrate` integration targets create LXC containers from
 `fedora-44-default_20260713_amd64.tar.xz` by default. The `proxmox_lxc` module
 looks up an unqualified template in `local:vztmpl` on the selected
 `proxmox_node`; it does not download the archive. Stage the default template on
@@ -152,6 +152,20 @@ the target. Generate the private integration configuration using the
 
 ```bash
 ansible-test integration proxmox_lxc_clone
+```
+
+## LXC migration integration tests
+
+The `proxmox_lxc_migrate` target checks migration preconditions, verifies that a
+running container requires `restart` in both normal and check mode,
+then predicts and performs a restart migration between two cluster nodes. Use
+the shared [LXC prerequisites](#shared-lxc-integration-test-prerequisites),
+generate the private integration configuration, and set
+`lxc_migrate_source_node` and `lxc_migrate_target_node` if the defaults do not
+match the test cluster. Run from the collection root:
+
+```bash
+ansible-test integration proxmox_lxc_migrate
 ```
 
 ## Node syslog information integration tests

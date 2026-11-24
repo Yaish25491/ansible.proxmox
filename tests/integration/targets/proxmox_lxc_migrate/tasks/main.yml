@@ -1,0 +1,276 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise LXC migration between cluster nodes
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: >-
+        {{ proxmox_api_token_secret | default(omit, true) }}
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Generate the LXC fixture root password
+      ansible.builtin.set_fact:
+        lxc_migrate_root_password: >-
+          {{ lookup('password', '/dev/null length=32') }}
+      no_log: true
+
+    - name: Check the migration VMID is unused on the source node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_source_before
+
+    - name: Check the migration VMID is unused on the target node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_target_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_target_before
+
+    - name: Check the migration VMID is unused by QEMU on the source node
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_source_qemu_before
+
+    - name: Check the migration VMID is unused by QEMU on the target node
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ lxc_migrate_target_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_target_qemu_before
+
+    - name: Refuse to modify an existing guest
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_source_before.lxcs | length == 0
+          - lxc_migrate_target_before.lxcs | length == 0
+          - lxc_migrate_source_qemu_before.vms | length == 0
+          - lxc_migrate_target_qemu_before.vms | length == 0
+        fail_msg: >-
+          The random LXC migration VMID is already in use; rerun the target.
+
+    - name: Claim ownership of the LXC migration fixture
+      ansible.builtin.set_fact:
+        lxc_migrate_cleanup_allowed: true
+
+    - name: Create a stopped LXC migration fixture
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        hostname: "ansible-lxc-migrate-{{ lxc_migrate_vmid }}"
+        ostemplate: "{{ lxc_migrate_template }}"
+        password: "{{ lxc_migrate_root_password }}"
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 1
+        memory: 512
+        ostype: fedora
+        power_cycle: 'off'
+        state: present
+      register: lxc_migrate_create
+
+    - name: Assert the LXC migration fixture was created
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_create is changed
+
+    - name: Predict migration in check mode
+      ansible.proxmox.proxmox_lxc_migrate:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        target: "{{ lxc_migrate_target_node }}"
+        target_storage: local-lvm
+        task_timeout: 1800
+      check_mode: true
+      register: lxc_migrate_check_mode
+
+    - name: Assert migration preconditions were checked without submission
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_check_mode is changed
+          - lxc_migrate_check_mode.preconditions.running is defined
+          - lxc_migrate_check_mode.task_upid is not defined
+
+    - name: Verify check mode kept the container on the source node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_after_check_mode
+
+    - name: Assert check mode did not migrate the container
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_after_check_mode.lxcs | length == 1
+
+    - name: Start the LXC migration fixture
+      ansible.proxmox.proxmox_lxc_powerstate:
+        vmid: "{{ lxc_migrate_vmid }}"
+        powerstate: start
+      register: lxc_migrate_start
+
+    - name: Verify the LXC migration fixture is running
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_running_before
+
+    - name: Assert the migration fixture is running
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_start.powerstate == 'running'
+          - lxc_migrate_running_before.powerstate == 'running'
+
+    - name: Reject running migration without restart in check mode
+      ansible.proxmox.proxmox_lxc_migrate:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        target: "{{ lxc_migrate_target_node }}"
+        target_storage: local-lvm
+      check_mode: true
+      register: lxc_migrate_running_check_rejected
+      ignore_errors: true
+
+    - name: Assert check mode rejects an unspecified running migration mode
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_running_check_rejected is failed
+          - >-
+            'restart=true'
+            in lxc_migrate_running_check_rejected.msg
+
+    - name: Reject running migration without restart
+      ansible.proxmox.proxmox_lxc_migrate:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        target: "{{ lxc_migrate_target_node }}"
+        target_storage: local-lvm
+      register: lxc_migrate_running_rejected
+      ignore_errors: true
+
+    - name: Assert normal mode rejects an unspecified running migration mode
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_running_rejected is failed
+          - >-
+            'restart=true'
+            in lxc_migrate_running_rejected.msg
+
+    - name: Predict restart migration in check mode
+      ansible.proxmox.proxmox_lxc_migrate:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        target: "{{ lxc_migrate_target_node }}"
+        restart: true
+        target_storage: local-lvm
+        task_timeout: 1800
+      check_mode: true
+      register: lxc_migrate_restart_check
+
+    - name: Assert check-mode restart preconditions
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_restart_check is changed
+          - lxc_migrate_restart_check.preconditions.running | bool
+          - lxc_migrate_restart_check.task_upid is not defined
+
+    - name: Verify restart check mode kept the container on the source node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_restart_after_check
+
+    - name: Assert restart check mode did not migrate the container
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_restart_after_check.lxcs | length == 1
+
+    - name: Migrate the running LXC container with restart
+      ansible.proxmox.proxmox_lxc_migrate:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        target: "{{ lxc_migrate_target_node }}"
+        restart: true
+        target_storage: local-lvm
+        task_timeout: 1800
+      register: lxc_migrate_result
+
+    - name: Assert LXC migration completed
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_result is changed
+          - lxc_migrate_result.preconditions.running | bool
+          - lxc_migrate_result.task_upid is defined
+
+    - name: Verify the container is present on the target node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_target_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_target_after
+
+    - name: Verify the container is absent from the source node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_source_after
+
+    - name: Verify the migrated LXC container is running
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_powerstate_after
+
+    - name: Assert the migrated container is only on the target node
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_target_after.lxcs | length == 1
+          - >-
+            lxc_migrate_target_after.lxcs[0].hostname
+            == 'ansible-lxc-migrate-' ~ lxc_migrate_vmid
+          - lxc_migrate_source_after.lxcs | length == 0
+          - lxc_migrate_powerstate_after.powerstate == 'running'
+
+  always:
+    - name: Remove the LXC migration fixture from the target node
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ lxc_migrate_target_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      failed_when: false
+      when:
+        - lxc_migrate_cleanup_allowed | default(false)
+
+    - name: Remove the LXC migration fixture from the source node
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+        state: absent
+        power_cycle: 'off'
+      failed_when: false
+      when:
+        - lxc_migrate_cleanup_allowed | default(false)
+
+    - name: Verify the migration fixture is absent from the target node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_target_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_target_cleanup_info
+      when: lxc_migrate_cleanup_allowed | default(false)
+
+    - name: Verify the migration fixture is absent from the source node
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ lxc_migrate_source_node }}"
+        vmid: "{{ lxc_migrate_vmid }}"
+      register: lxc_migrate_source_cleanup_info
+      when: lxc_migrate_cleanup_allowed | default(false)
+
+    - name: Assert cleanup removed the migration fixture from both nodes
+      ansible.builtin.assert:
+        that:
+          - lxc_migrate_target_cleanup_info.lxcs | length == 0
+          - lxc_migrate_source_cleanup_info.lxcs | length == 0
+      when: lxc_migrate_cleanup_allowed | default(false)

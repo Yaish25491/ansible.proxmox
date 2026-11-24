@@ -9,6 +9,7 @@ action_groups:
     - proxmox_lxc
     - proxmox_lxc_clone
     - proxmox_lxc_info
+    - proxmox_lxc_migrate
     - proxmox_lxc_powerstate
     - proxmox_lxc_powerstate_info
     - proxmox_lxc_snapshot
