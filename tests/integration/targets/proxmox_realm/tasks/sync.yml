@@ -12,7 +12,7 @@
     dest: '{{ realm_ldap_directory.path }}/entries.json'
     content: '[]'
     mode: '0600'
-- name: Start the read-only LDAP fixture on an ephemeral controller port
+- name: Start the read-only LDAP fixture on the configured controller port
   ansible.builtin.command:
     argv:
       - '{{ ansible_playbook_python }}'
@@ -24,6 +24,8 @@
       - '{{ proxmox_api_host }}'
       - --advertise-host
       - '{{ realm_test_ldap_advertise_host }}'
+      - --port
+      - '{{ realm_test_ldap_port | string }}'
   register: realm_ldap_started
   changed_when: true
 - name: Retain the owned service address for the native Proxmox worker

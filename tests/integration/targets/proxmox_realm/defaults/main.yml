@@ -8,6 +8,8 @@ realm_test_audiences_supported: false
 # The Proxmox node must be able to reach this controller-hosted, read-only fixture.
 # Override for runners behind NAT; this never changes host networking or firewalls.
 realm_test_ldap_advertise_host: ''
+# Fixed port opened for the Proxmox node to reach the runner-hosted fixture.
+realm_test_ldap_port: 41365
 realm_sync_user_names:
   - ansible-{{ integration_resource_ids | join('') }}-a
   - ansible-{{ integration_resource_ids | join('') }}-b

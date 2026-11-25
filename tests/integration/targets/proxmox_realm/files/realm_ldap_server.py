@@ -178,9 +178,9 @@ class LdapServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def serve(directory):
-    """Listen on an ephemeral port until the owned stop file is created."""
-    with LdapServer(("0.0.0.0", 0), LdapHandler) as server:
+def serve(directory, port):
+    """Listen on the configured port until the owned stop file is created."""
+    with LdapServer(("0.0.0.0", port), LdapHandler) as server:
         server.directory = directory
         server.timeout = 0.2
         ready = directory / "ready.tmp"
@@ -206,12 +206,15 @@ def main():
     parser.add_argument("--directory", required=True)
     parser.add_argument("--api-host", default="127.0.0.1")
     parser.add_argument("--advertise-host", default="")
+    parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
+    if not 0 <= args.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
     directory = Path(args.directory).resolve()
     if not directory.is_dir() or not directory.name.startswith("ansible-realm-ldap-"):
         parser.error("Use the target's owned ansible-realm-ldap- temporary directory")
     if args.action == "serve":
-        serve(directory)
+        serve(directory, args.port)
         return
     if args.action == "stop":
         (directory / "stop").touch()
@@ -224,7 +227,7 @@ def main():
     host = advertise_host(args.api_host, args.advertise_host)
     with (directory / "server.log").open("w") as log:
         process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "serve", "--directory", str(directory)],
+            [sys.executable, str(Path(__file__).resolve()), "serve", "--directory", str(directory), "--port", str(args.port)],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
         )
     for _attempt in range(100):

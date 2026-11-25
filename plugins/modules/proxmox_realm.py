@@ -937,6 +937,7 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         if state in ("synced", "reset"):
             if resource is None:
                 self.client.fail_request("The realm must already exist for the requested operation.")
+                return None
             if self.module.params.get("type") not in (None, resource.get("type")):
                 self.module.fail_json(msg="The requested provider type does not match the existing realm.")
             self._validate_digest(resource)
@@ -967,11 +968,30 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             if (value := self.module.params.get(name)) is not None
         }
 
+    def _validate_username_claim_update(self, resource, desired):
+        if "username-claim" in desired and resource.get("username-claim") != desired["username-claim"]:
+            self.client.fail_request("username_claim cannot be changed on an existing OpenID realm.")
+
+    def _add_realm_option_updates(self, resource, updates, sync_options, tfa):
+        if tfa is not None and not self._tfa_options_equal(resource.get("tfa"), tfa):
+            updates["tfa"] = tfa
+        if sync_options is not None and not self._sync_options_equal(resource.get("sync-defaults-options"), sync_options):
+            updates["sync-defaults-options"] = sync_options
+
+    def _get_update_removals(self, resource, params, clear_comment):
+        removals = [self.api_names.get(name, name) for name in params.get("remove_properties") or []]
+        if clear_comment:
+            removals.append("comment")
+        if params.get("mode") is not None and params.get("secure") is None:
+            removals.append("secure")
+        if resource.get("comment") == self.builtin_comments.get(resource.get("realm")):
+            removals = [name for name in removals if name != "comment"]
+        return [name for name in removals if name in resource or name == "password"]
+
     def get_update_parameters(self, resource):
         params = self.module.params
         desired = self._desired_parameters()
-        if "username-claim" in desired and resource.get("username-claim") != desired["username-claim"]:
-            self.client.fail_request("username_claim cannot be changed on an existing OpenID realm.")
+        self._validate_username_claim_update(resource, desired)
         clear_comment = desired.get("comment") in ("", "0")
         if clear_comment:
             desired.pop("comment")
@@ -981,20 +1001,10 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         if params.get("secure") is not None:
             defaults.pop("mode", None)
         updates = self.get_parameter_updates(resource, desired, defaults)
-        if tfa is not None and not self._tfa_options_equal(resource.get("tfa"), tfa):
-            updates["tfa"] = tfa
-        if sync_options is not None and not self._sync_options_equal(resource.get("sync-defaults-options"), sync_options):
-            updates["sync-defaults-options"] = sync_options
-        removals = [self.api_names.get(name, name) for name in params.get("remove_properties") or []]
-        if clear_comment:
-            removals.append("comment")
-        if params.get("mode") is not None and params.get("secure") is None:
-            removals.append("secure")
-        if resource.get("comment") == self.builtin_comments.get(resource.get("realm")):
-            removals = [name for name in removals if name != "comment"]
-        self._merge_formatted_deletions(updates, [name for name in removals if name in resource or name == "password"])
-        if params.get("password") is not None and params.get("update_password", "on_create") == "always":
-            updates["password"] = params["password"]
+        self._add_realm_option_updates(resource, updates, sync_options, tfa)
+        removals = self._get_update_removals(resource, params, clear_comment)
+        self._merge_formatted_deletions(updates, removals)
+        self._add_password_update(params, updates)
         return updates
 
     def _write_parameters(self, values):
@@ -1003,6 +1013,10 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         if check is not None:
             parameters["check-connection"] = int(check)
         return parameters
+
+    def _add_password_update(self, params, updates):
+        if params.get("password") is not None and params.get("update_password", "on_create") == "always":
+            updates["password"] = params["password"]
 
     def _read_after_write(self, operation, provider):
         result = self.get_resource(validate_desired=False)

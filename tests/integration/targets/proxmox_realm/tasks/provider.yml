@@ -2,19 +2,24 @@
 # GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
 ---
-- name: Select concrete configuration values for this owned provider
-  ansible.builtin.set_fact:
-    realm_provider_values: >-
-      {{ {'realm': realm_fixture.realm, 'server2': 'backup.example.invalid', 'mode': 'ldaps',
-          'verify': true, 'port': 636, 'bind_dn': 'cn=fixture,dc=example,dc=invalid',
-          'password': 'EXAMPLE-disconnected-fixture', 'update_password': 'on_create', 'check_connection': false}
-         if realm_fixture.type != 'openid' else
-         {'realm': realm_fixture.realm, 'groups_claim': 'groups', 'groups_autocreate': true,
-          'groups_overwrite': true, 'query_userinfo': false, 'scopes': 'email profile groups',
-          'client_key': 'EXAMPLE-disconnected-fixture', 'acr_values': 'urn:example:fixture'} }}
-  no_log: true
 - name: Predict provider-specific reconciliation
-  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  ansible.proxmox.proxmox_realm: &realm_provider_settings
+    realm: '{{ realm_fixture.realm }}'
+    server2: '{{ "backup.example.invalid" if realm_fixture.type != "openid" else omit }}'
+    mode: '{{ "ldaps" if realm_fixture.type != "openid" else omit }}'
+    verify: '{{ true if realm_fixture.type != "openid" else omit }}'
+    port: '{{ 636 if realm_fixture.type != "openid" else omit }}'
+    bind_dn: '{{ "cn=fixture,dc=example,dc=invalid" if realm_fixture.type != "openid" else omit }}'
+    password: '{{ "EXAMPLE-disconnected-fixture" if realm_fixture.type != "openid" else omit }}'
+    update_password: '{{ "on_create" if realm_fixture.type != "openid" else omit }}'
+    check_connection: '{{ false if realm_fixture.type != "openid" else omit }}'
+    groups_claim: '{{ "groups" if realm_fixture.type == "openid" else omit }}'
+    groups_autocreate: '{{ true if realm_fixture.type == "openid" else omit }}'
+    groups_overwrite: '{{ true if realm_fixture.type == "openid" else omit }}'
+    query_userinfo: '{{ false if realm_fixture.type == "openid" else omit }}'
+    scopes: '{{ "email profile groups" if realm_fixture.type == "openid" else omit }}'
+    client_key: '{{ "EXAMPLE-disconnected-fixture" if realm_fixture.type == "openid" else omit }}'
+    acr_values: '{{ "urn:example:fixture" if realm_fixture.type == "openid" else omit }}'
   check_mode: true
   register: realm_provider_prediction
   no_log: true
@@ -29,11 +34,11 @@
       - realm_provider_before.realms == realm_empty_info.realms
   no_log: true
 - name: Apply provider-specific settings without contacting the provider
-  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  ansible.proxmox.proxmox_realm: *realm_provider_settings
   register: realm_provider_updated
   no_log: true
 - name: Repeat provider-specific settings
-  ansible.proxmox.proxmox_realm: '{{ realm_provider_values }}'
+  ansible.proxmox.proxmox_realm: *realm_provider_settings
   register: realm_provider_repeated
   no_log: true
 - name: Independently read provider-specific settings
