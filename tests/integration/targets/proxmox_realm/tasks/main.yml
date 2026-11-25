@@ -5,17 +5,20 @@
 - name: Reset realm ownership for this invocation
   ansible.builtin.set_fact:
     realm_cleanup_allowed: false
+    realm_ldap_directory: {}
 - name: Exercise realm configuration and independent information reads
   module_defaults:
-    group/ansible.proxmox.proxmox:
+    group/ansible.proxmox.proxmox: &realm_connection
       api_host: '{{ proxmox_api_host }}'
       api_port: '{{ proxmox_api_port | default(8006) }}'
+      api_timeout: '{{ proxmox_api_timeout | default(30) }}'
       api_user: '{{ proxmox_api_user | default(omit, true) }}'
       api_password: '{{ proxmox_api_password | default(omit, true) }}'
       api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
       api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
       ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
       validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+    proxmox_realm_acl_fixture: *realm_connection
   block:
     - name: Verify fixture realm identifiers are distinct
       ansible.builtin.assert:
@@ -30,7 +33,45 @@
       ansible.builtin.assert:
         that:
           - realm_preflight.results | map(attribute='realms') | flatten | length == 0
-    - name: Claim only the verified absent realms
+    - name: Independently verify all prospective imported users are absent
+      ansible.proxmox.proxmox_user_info:
+        userid: '{{ item }}'
+      loop: '{{ realm_sync_owned_users }}'
+      register: realm_sync_user_preflight
+    - name: Independently verify all prospective imported groups are absent
+      ansible.proxmox.proxmox_group_info:
+        groupid: '{{ item }}'
+      loop: '{{ realm_sync_owned_groups }}'
+      register: realm_sync_group_preflight
+    - name: Inspect exact fixture bindings before claiming identities
+      proxmox_realm_acl_fixture:
+        userid: '{{ item }}'
+        owned_users: '{{ realm_sync_owned_users }}'
+        read_only: true
+      loop: '{{ realm_sync_owned_users }}'
+      register: realm_sync_acl_preflight
+    - name: Inspect all users to detect orphaned identities in the proposed realms
+      ansible.proxmox.proxmox_user_info:
+      register: realm_sync_all_users
+      no_log: true
+    - name: Inspect all groups to detect orphaned groups in the proposed realms
+      ansible.proxmox.proxmox_group_info:
+      register: realm_sync_all_groups
+      no_log: true
+    - name: Refuse realms with any pre-existing identity or suffixed group
+      ansible.builtin.assert:
+        that:
+          - realm_sync_all_users.users | selectattr('userid', 'search', '@' ~ (item.realm | regex_escape) ~ '$') | list | length == 0
+          - realm_sync_all_groups.groups | selectattr('groupid', 'search', '-' ~ (item.realm | regex_escape) ~ '$') | list | length == 0
+      loop: '{{ realm_sync_fixtures }}'
+      no_log: true
+    - name: Refuse existing imported identity or binding identifiers
+      ansible.builtin.assert:
+        that:
+          - realm_sync_user_preflight.results | map(attribute='users') | flatten | length == 0
+          - realm_sync_group_preflight.results | map(attribute='groups') | flatten | length == 0
+          - realm_sync_acl_preflight.results | map(attribute='binding') | reject('equalto', none) | list | length == 0
+    - name: Claim only the verified absent realms and their imported fixtures
       ansible.builtin.set_fact:
         realm_cleanup_allowed: true
     - name: Exercise configuration lifecycle for every provider
@@ -41,7 +82,15 @@
         label: '{{ realm_fixture.realm }}'
     - name: Exercise rejected requests without modifying existing identities
       ansible.builtin.include_tasks: errors.yml
+    - name: Exercise actual directory synchronization and independent identity reads
+      ansible.builtin.include_tasks: sync.yml
   always:
-    - name: Remove and independently verify only owned realm fixtures
-      ansible.builtin.include_tasks: cleanup.yml
-      when: realm_cleanup_allowed
+    - name: Clean API fixtures and always stop the owned local directory
+      block:
+        - name: Remove and independently verify only owned API fixtures
+          ansible.builtin.include_tasks: cleanup.yml
+          when: realm_cleanup_allowed
+      always:
+        - name: Stop and remove the owned local directory fixture
+          ansible.builtin.include_tasks: directory_cleanup.yml
+          when: realm_ldap_directory.path is defined

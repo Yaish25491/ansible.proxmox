@@ -168,6 +168,9 @@
     vmid: "{{ vmid_full }}"
     power_cycle: 'off'
   register: vm_power_off
+  until: vm_power_off is not failed
+  retries: 5
+  delay: 5
 
 - name: Read power state after power off  # noqa: args[module]
   ansible.proxmox.proxmox_vm_powerstate_info:

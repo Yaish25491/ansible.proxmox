@@ -11,28 +11,35 @@ DOCUMENTATION = r"""
 module: proxmox_realm
 short_description: Manage Proxmox VE authentication realms
 description:
-- Create, reconcile or delete LDAP, Active Directory and OpenID realm configuration.
-- Manage provider configuration only; does not synchronize identities, start a login flow or install an identity provider.
+- Create, reconcile or delete realm configuration, manage protected built-in settings with explicit opt-in, and synchronize LDAP or AD identities.
+- Exposes the authentication-domain API, including native synchronization options, previews and asynchronous task results.
 version_added: 1.0.0
 options:
   state:
-    description: Desired presence of the provider configuration. Other reconciliation options are ignored when absent.
+    description:
+    - C(present) reconciles provider configuration. C(absent) deletes a custom realm; other reconciliation options are ignored.
+    - C(synced) runs synchronization for an existing LDAP or AD realm without reconciling configuration in the same task.
+    - C(reset) invokes native deletion of persisted PAM/PVE settings; those built-in realms are always synthesized by Proxmox and remain present.
+    - Sync and reset are explicit operations and report changed when requested, even if the resulting data is identical;
+      a native dry-run reports unchanged. Check mode predicts operations without starting tasks or contacting the directory.
     type: str
-    choices: [present, absent]
+    choices: [present, absent, synced, reset]
     default: present
   realm:
     description:
     - Realm identifier, 2 through 32 characters; starts with a letter and then letters, digits, dots, underscores or hyphens.
-    - Built-in pam and pve realms and the authentication identity's realm cannot be managed.
+    - Built-in pam and pve realms and the authentication identity's realm require O(allow_protected=true).
     type: str
     required: true
   type:
-    description: Provider type. Required for creation and immutable afterward.
+    description: Provider type. Required for creation and immutable afterward. PAM and PVE types can only be updated on their built-in realms.
     type: str
     choices:
     - ldap
     - ad
     - openid
+    - pam
+    - pve
   comment:
     description:
     - Login selector description; at most 4096 characters. Empty string and literal 0 clear the comment, matching Proxmox storage.
@@ -125,7 +132,7 @@ options:
     type: bool
   filter:
     description:
-    - LDAP user synchronization filter. Stores configuration only; synchronization is never started.
+    - LDAP user synchronization filter used when O(state=synced).
     - Omitted leaves existing configuration unchanged.
     type: str
   sync_attributes:
@@ -160,10 +167,10 @@ options:
     type: str
   sync_defaults_options:
     description:
-    - Proxmox property string of LDAP or AD synchronization defaults. Does not execute synchronization.
+    - Proxmox property string of LDAP or AD synchronization defaults used when O(state=synced).
     - Supports scope=users|groups|both, enable-new=0|1 and remove-vanished=none or a semicolon-separated set of acl, properties and entry.
     - Replaces the whole defaults property string; field order and implicit server defaults do not cause changes.
-    - Deprecated full and purge keys are rejected. Use remove-vanished instead; use remove_properties to clear the property.
+    - Native deprecated full and purge flags are accepted as 0 or 1. Prefer remove-vanished; use remove_properties to clear the property.
     - Omitted leaves existing configuration unchanged.
     type: str
   issuer_url:
@@ -250,20 +257,77 @@ options:
     description:
     - Optional module option names to remove from an existing realm; omitted and an empty list remove nothing.
     - Required provider fields and the immutable OpenID username claim cannot be removed.
+    - For LDAP or AD, password removes the stored bind credential through the native API. Its existence cannot be read;
+      an explicit password removal therefore requests a write and reports changed on every invocation.
     - Do not supply a value and request its removal together.
+    - Removing a built-in realm's comment restores the native synthesized comment; that effective default is a no-op on subsequent runs.
     type: list
     elements: str
     default: []
   digest:
     description:
     - Optional expected domains configuration digest. A differing digest fails before a mutation, including in check mode.
-    - Updates automatically send the freshly read digest when this option is omitted. The DELETE API has no atomic digest guard.
+    - Configuration updates send the freshly read digest when omitted. Deletion, reset and synchronization have only a preflight digest check;
+      those native operations have no atomic digest parameter.
     type: str
   check_connection:
     description:
     - Check provider bind connectivity when an LDAP or AD configuration write occurs.
-    - Omit for OpenID; even false is rejected for that provider. A no-op does not perform a connectivity check.
+    - Omit for OpenID, PAM and PVE; even false is rejected for those providers. A no-op does not perform a connectivity check.
     type: bool
+  secure:
+    description:
+    - Native deprecated LDAP or AD LDAPS flag. Supported for compatibility; mode is preferred and takes precedence when both are stored.
+    - Supplying mode alone removes a legacy secure flag. Supplying both retains native mode precedence.
+    type: bool
+  tfa:
+    description:
+    - Native realm-wide TFA property string for LDAP, AD, PAM or PVE, at most 128 characters.
+    - Requires type=oath or type=yubico. Supports id, key, url, digits from 6 through 8, and step of at least 10 seconds.
+    - The property is authoritative; omission preserves it and remove_properties with tfa clears it.
+    - Yubico API keys are sensitive. Results include only nonsecret TFA metadata, and property ordering/defaults are compared semantically.
+    type: str
+  allow_protected:
+    description:
+    - Explicitly allow supported operations on PAM/PVE built-ins or the authentication identity's realm.
+    - Changing authentication settings or synchronizing the controller realm can affect access. Built-in creation and permanent removal remain impossible.
+    type: bool
+    default: false
+  wait:
+    description:
+    - With state=synced, wait for the native worker to finish. Omission waits; false returns its UPID immediately.
+    - Task timeout does not cancel the worker. Not accepted for other states.
+    type: bool
+  sync_options:
+    description:
+    - Native per-run LDAP or AD synchronization options, accepted only with state=synced.
+    - Omitted options use the server's realm defaults and schema defaults. Supply scope here or configure it in sync_defaults_options.
+    type: dict
+    suboptions:
+      scope:
+        description: Synchronize users, groups, or both.
+        type: str
+        choices: [users, groups, both]
+      enable_new:
+        description: Enable newly imported users. Omission uses the realm default or the native default true.
+        type: bool
+      remove_vanished:
+        description:
+        - Native semicolon-separated removal options acl, properties and entry, or none. Omission uses native defaults.
+        - These options can remove users, groups, local properties and ACL assignments absent from the directory.
+        type: str
+      full:
+        description: Native deprecated full-sync alias; passed through to the server. Prefer remove_vanished.
+        type: bool
+      purge:
+        description: Native deprecated ACL-purge alias; passed through to the server. Prefer remove_vanished.
+        type: bool
+      dry_run:
+        description:
+        - Run the native preview worker without writing users, groups or ACLs. The operation still contacts the directory and creates a task record.
+        - Ansible check mode validates and predicts this request without submitting it.
+        type: bool
+        default: false
 extends_documentation_fragment:
 - ansible.proxmox.proxmox_base
 - ansible.proxmox.proxmox_https_options
@@ -271,19 +335,23 @@ extends_documentation_fragment:
 attributes:
   check_mode:
     support: full
-    description: Reads configuration and predicts changes without writes or provider connectivity checks.
+    description: Reads and validates inputs and predicts configuration changes or operation submission without writes, task submission or directory contact.
 notes:
-- Requires the Administrator role propagated on /access/realm, including reads and check mode. Native writes require Realm.Allocate.
-- LDAP/AD bind passwords are write-only. OpenID client secrets and legacy realm TFA configuration are excluded from all returned records.
+- Requires Administrator privileges propagated on /access/realm, including reads and check mode. Native configuration writes require Realm.Allocate.
+- Synchronization additionally requires propagated Administrator privileges on /access/groups and /access/realm/REALM;
+  native sync requires User.Modify and Realm.AllocateUser respectively.
+- LDAP/AD bind passwords are write-only. OpenID client secrets and realm TFA keys are excluded from all returned records.
 - Setting default=true changes the login default for the whole cluster; deleting that realm does not restore the previous default.
 - Omission preserves values. Use remove_properties for explicit deletion of optional fields. Other fields are reconciled individually.
-- Built-in and controller authentication realms cannot be managed. Realm deletion does not remove realm users, groups or ACLs.
-- LDAP/AD synchronization configuration is supported, but synchronization, deprecated secure transport and legacy realm-wide TFA settings are outside this
-  module.
+- Built-in and controller realms require explicit allow_protected opt-in. Realm deletion does not remove realm users, groups or ACLs.
+- Native synchronization supports LDAP and AD only; OpenID, PAM and PVE do not provide a synchronization operation.
+- Repeated real synchronization submits another native job. Changed indicates job submission, not an independently calculated per-entry difference.
+  Native dry-run is available explicitly; check mode cannot infer directory-side differences without executing that operation.
 - Proxmox can write an LDAP/AD bind credential file before checking connectivity or saving realm configuration.
   A rejected request can therefore leave a partial credential change; inspect and retry deliberately after a failure.
   The module cannot determine whether a failed HTTP request wrote that file and does not infer changed=true for every API error.
-- Configuration writes are synchronous. task_timeout is inherited but no asynchronous task is started.
+- Configuration writes are synchronous. Synchronization uses the shared asynchronous task waiter and task_timeout, with a default of 300 seconds;
+  zero waits indefinitely and timeout does not cancel server work.
 """
 
 EXAMPLES = r"""
@@ -343,6 +411,48 @@ EXAMPLES = r"""
     api_token_secret: '{{ vault_proxmox_token_secret }}'
     realm: retired-corporate
     state: absent
+
+- name: Synchronize directory users and groups into an existing realm
+  ansible.proxmox.proxmox_realm:
+    api_host: pve.example.com
+    api_token_id: ansible@pve!automation
+    api_token_secret: '{{ vault_proxmox_token_secret }}'
+    realm: corporate
+    state: synced
+    sync_options:
+      scope: both
+      enable_new: false
+      remove_vanished: none
+    task_timeout: 600
+
+- name: Preview synchronization using the native dry-run worker
+  ansible.proxmox.proxmox_realm:
+    api_host: pve.example.com
+    api_token_id: ansible@pve!automation
+    api_token_secret: '{{ vault_proxmox_token_secret }}'
+    realm: corporate
+    state: synced
+    sync_options:
+      scope: both
+      dry_run: true
+
+- name: Update protected built-in realm settings explicitly
+  ansible.proxmox.proxmox_realm:
+    api_host: pve.example.com
+    api_token_id: ansible@pve!automation
+    api_token_secret: '{{ vault_proxmox_token_secret }}'
+    realm: pam
+    allow_protected: true
+    comment: Linux accounts
+
+- name: Reset persisted built-in realm settings to Proxmox defaults
+  ansible.proxmox.proxmox_realm:
+    api_host: pve.example.com
+    api_token_id: ansible@pve!automation
+    api_token_secret: '{{ vault_proxmox_token_secret }}'
+    realm: pam
+    state: reset
+    allow_protected: true
 """
 
 RETURN = r"""
@@ -352,10 +462,10 @@ realm:
   - Provider fields retain Proxmox API names, including hyphenated OpenID options; unset fields are omitted.
   - LDAP and AD records can include server1, base_dn, domain, transport and synchronization settings.
   - OpenID records can include issuer-url, client-id, claims, scopes and group settings.
-  - Passwords, client-key and legacy TFA configuration are excluded.
+  - Passwords, client-key and TFA API keys are excluded; safe TFA metadata is returned as a dictionary.
   - Native keys containing hyphens require bracket notation, for example C(record['issuer-url']).
   - C(case-sensitive) (int, when configured) - Whether LDAP or AD usernames are case sensitive. The server default is true.
-  - C(sync-defaults-options) (str, when configured) - Proxmox property string of LDAP or AD synchronization defaults. Does not execute synchronization.
+  - C(sync-defaults-options) (str, when configured) - Proxmox property string of LDAP or AD synchronization defaults used when O(state=synced).
   - C(issuer-url) (str, when configured) - OpenID issuer URL; required when creating OpenID.
   - C(client-id) (str, when configured) - OpenID client identifier; required when creating OpenID.
   - C(username-claim) (str, when configured) - OpenID username claim. Creation-only; an existing differing value is rejected.
@@ -484,9 +594,35 @@ realm:
       type: str
       returned: when configured
     secure:
-      description: Deprecated LDAP/AD LDAPS flag retained in legacy configurations; explicit mode migrates it to the modern transport option.
+      description: Native legacy LDAP or AD LDAPS flag when configured.
       type: int
       returned: when configured
+    tfa:
+      description: Nonsecret native TFA property fields type, id, url, digits and step, with string values. The key field is never returned.
+      type: dict
+      returned: when configured
+sync:
+  description: Requested synchronization options and preflight-resolved scope. Native hyphenated option names remain dictionary keys under options.
+  type: dict
+  returned: with state=synced
+  contains:
+    scope:
+      description: Users, groups or both scope resolved from the request or preflight realm defaults. The server resolves omitted flags again at submission.
+      type: str
+    dry_run:
+      description: Whether the requested worker is a native no-write preview.
+      type: bool
+    options:
+      description: Native API parameters sent to the worker, excluding unspecified options so server defaults remain authoritative.
+      type: dict
+task_upid:
+  description: Native worker UPID, usable to inspect an asynchronous request. Never invented in check mode.
+  type: str
+  returned: after synchronization submission
+task_status:
+  description: Final status and exit status from the shared task waiter.
+  type: dict
+  returned: when synchronization was submitted and wait was not false
 """
 
 import re
@@ -500,6 +636,7 @@ from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox import (
     proxmox_resource_argument_spec,
 )
 from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_resource import ProxmoxResourceModule
+from ansible_collections.ansible.proxmox.plugins.module_utils.proxmox_task import ProxmoxTask
 
 
 REALM_RESOURCE_PATH = "access/domains/{0}"
@@ -541,6 +678,8 @@ FIELDS = (
     "acr_values",
     "query_userinfo",
     "audiences",
+    "secure",
+    "tfa",
 )
 FIELD_SPEC = {
     "comment": {"type": "str"},
@@ -580,15 +719,17 @@ FIELD_SPEC = {
     "acr_values": {"type": "str"},
     "query_userinfo": {"type": "bool"},
     "audiences": {"type": "str"},
+    "secure": {"type": "bool"},
+    "tfa": {"type": "str", "no_log": True},
 }
 
 
 class ProxmoxRealmModule(ProxmoxResourceModule):
-    """Reconcile a single provider configuration without enrolling identities."""
+    """Manage realm configuration and explicitly requested native operations."""
 
     result_key = "realm"
-    ldap_fields = FIELDS[2:24]
-    openid_fields = FIELDS[24:]
+    ldap_fields = FIELDS[2:24] + ("secure", "tfa")
+    openid_fields = FIELDS[24:-2]
     api_names = {
         name: name.replace("_", "-")
         for name in (
@@ -616,8 +757,14 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         "mode": "ldap",
         "capath": "/etc/ssl/certs",
         "scopes": "email profile",
+        "secure": False,
     }
-    required_fields = {"ldap": ("server1", "base_dn", "user_attr"), "ad": ("server1", "domain"), "openid": ("issuer_url", "client_id")}
+    required_fields = {
+        "ldap": ("server1", "base_dn", "user_attr"), "ad": ("server1", "domain"),
+        "openid": ("issuer_url", "client_id"), "pam": (), "pve": (),
+    }
+    builtin_comments = {"pam": "Linux PAM standard authentication", "pve": "Proxmox VE authentication server"}
+    sync_api_names = {"enable_new": "enable-new", "remove_vanished": "remove-vanished", "dry_run": "dry-run"}
 
     def _validate_identifier(self):
         realm = self.module.params["realm"]
@@ -629,20 +776,30 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         if not identity:
             identity = (self.module.params.get("api_token_id") or "").rpartition("!")[0]
         controller_realm = identity.rsplit("@", 1)[-1]
-        if realm in ("pam", "pve", controller_realm):
-            self.module.fail_json(msg="Built-in and controller authentication realms cannot be managed.")
+        if realm in ("pam", "pve", controller_realm) and not self.module.params.get("allow_protected", False):
+            self.module.fail_json(msg="Built-in and controller authentication realms cannot be managed without allow_protected=true.")
+        if realm in self.builtin_comments and self.module.params.get("state", "present") == "absent":
+            self.module.fail_json(msg="Proxmox always synthesizes built-in realms; use state=reset to reset their persisted configuration.")
 
     def _validate_fields(self, provider, creating):
         params = self.module.params
-        applicable = {"comment", "default"} | set(self.openid_fields if provider == "openid" else self.ldap_fields)
+        applicable = {"comment", "default"}
+        if provider in ("ldap", "ad"):
+            applicable.update(self.ldap_fields)
+        elif provider == "openid":
+            applicable.update(self.openid_fields)
+        else:
+            applicable.add("tfa")
         if provider == "ldap":
             applicable.discard("domain")
         invalid = [name for name in FIELDS if params.get(name) is not None and name not in applicable]
         if invalid:
             self.module.fail_json(msg="Options do not apply to this provider: {0}.".format(", ".join(invalid)))
-        if provider == "openid" and (params.get("password") is not None or params.get("check_connection") is not None):
+        if provider not in ("ldap", "ad") and (params.get("password") is not None or params.get("check_connection") is not None):
             self.module.fail_json(msg="password and check_connection apply only to LDAP and AD providers.")
         self._validate_required_fields(provider, creating)
+        if provider in ("ldap", "ad"):
+            applicable.add("password")
         self._validate_removals(provider, applicable, creating)
         self._validate_values()
 
@@ -694,6 +851,7 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         if user_attr is not None and re.fullmatch(r"\S{2,}", user_attr) is None:
             self.module.fail_json(msg="user_attr must contain at least two non-whitespace characters.")
         self._validate_sync_options()
+        self._validate_tfa()
 
     def _validate_sync_options(self):
         value = self.module.params.get("sync_defaults_options")
@@ -703,10 +861,11 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         options = self._parse_formatted_options(value)
         if len(fields) != len(options) or any("=" not in field for field in fields):
             self.module.fail_json(msg="sync_defaults_options requires unique key=value fields; use remove_properties to clear it.")
-        if {"full", "purge"} & options.keys():
-            self.module.fail_json(msg="Deprecated full and purge sync options are unsupported; use remove-vanished instead.")
-        if options.keys() - {"scope", "enable-new", "remove-vanished"}:
-            self.module.fail_json(msg="sync_defaults_options only supports scope, enable-new and remove-vanished.")
+        if options.keys() - {"scope", "enable-new", "remove-vanished", "full", "purge"}:
+            self.module.fail_json(msg="sync_defaults_options contains an unsupported native synchronization option.")
+        for name in ("full", "purge"):
+            if name in options and options[name] not in ("0", "1"):
+                self.module.fail_json(msg="Legacy sync flags must be 0 or 1.")
         if "scope" in options and options["scope"] not in ("users", "groups", "both"):
             self.module.fail_json(msg="Sync scope must be users, groups or both.")
         if "enable-new" in options and options["enable-new"] not in ("0", "1"):
@@ -714,6 +873,31 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
         removed = options.get("remove-vanished", "none")
         if removed != "none" and not set(removed.split(";")) <= {"acl", "properties", "entry"}:
             self.module.fail_json(msg="Sync remove-vanished must be none or a semicolon-separated set of acl, properties and entry.")
+
+    def _validate_tfa(self):
+        value = self.module.params.get("tfa")
+        if value is None:
+            return
+        options = self._parse_formatted_options(value)
+        if options.get("key") and hasattr(self.module, "no_log_values"):
+            self.module.no_log_values.add(options["key"])
+        if len(value) > 128 or len(value.split(",")) != len(options) or any("=" not in item for item in value.split(",")):
+            self.module.fail_json(msg="tfa requires a native property string of unique key=value fields, at most 128 characters.")
+        if options.keys() - {"type", "id", "key", "url", "digits", "step"} or options.get("type") not in ("oath", "yubico"):
+            self.module.fail_json(msg="tfa requires type=oath or type=yubico and only native TFA properties.")
+        for name, minimum, maximum in (("digits", 6, 8), ("step", 10, None)):
+            if name not in options:
+                continue
+            if not options[name].isdigit() or int(options[name]) < minimum or (maximum is not None and int(options[name]) > maximum):
+                self.module.fail_json(msg="tfa {0} is outside the native supported range.".format(name))
+
+    def _tfa_options_equal(self, current, desired):
+        def normalized(value):
+            options = self._parse_formatted_options(value)
+            options.setdefault("digits", "6")
+            options.setdefault("step", "30")
+            return options
+        return self._formatted_options_equal(normalized(current), normalized(desired))
 
     def _normalized_sync_options(self, value):
         options = self._parse_formatted_options(value)
@@ -749,14 +933,25 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             )
         if not validate_desired:
             return resource
-        if self.module.params.get("state", "present") == "absent":
+        state = self.module.params.get("state", "present")
+        if state in ("synced", "reset"):
+            if resource is None:
+                self.client.fail_request("The realm must already exist for the requested operation.")
+                return None
+            if self.module.params.get("type") not in (None, resource.get("type")):
+                self.module.fail_json(msg="The requested provider type does not match the existing realm.")
+            self._validate_digest(resource)
+            return resource
+        if state == "absent":
             self._validate_digest(resource)
             return resource
         provider = resource.get("type") if resource else self.module.params.get("type")
         if provider not in self.required_fields:
-            self.module.fail_json(msg="type is required for creation and must be ldap, ad or openid.")
+            self.module.fail_json(msg="type is required for creation and must be a native provider type.")
         if resource and self.module.params.get("type") not in (None, provider):
             self.module.fail_json(msg="An existing realm's type cannot be changed.")
+        if not exists and provider in self.builtin_comments:
+            self.module.fail_json(msg="Proxmox does not allow creating built-in PAM/PVE provider types.")
         self._validate_fields(provider, creating=not exists)
         self._validate_digest(resource)
         return resource
@@ -773,26 +968,43 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             if (value := self.module.params.get(name)) is not None
         }
 
+    def _validate_username_claim_update(self, resource, desired):
+        if "username-claim" in desired and resource.get("username-claim") != desired["username-claim"]:
+            self.client.fail_request("username_claim cannot be changed on an existing OpenID realm.")
+
+    def _add_realm_option_updates(self, resource, updates, sync_options, tfa):
+        if tfa is not None and not self._tfa_options_equal(resource.get("tfa"), tfa):
+            updates["tfa"] = tfa
+        if sync_options is not None and not self._sync_options_equal(resource.get("sync-defaults-options"), sync_options):
+            updates["sync-defaults-options"] = sync_options
+
+    def _get_update_removals(self, resource, params, clear_comment):
+        removals = [self.api_names.get(name, name) for name in params.get("remove_properties") or []]
+        if clear_comment:
+            removals.append("comment")
+        if params.get("mode") is not None and params.get("secure") is None:
+            removals.append("secure")
+        if resource.get("comment") == self.builtin_comments.get(resource.get("realm")):
+            removals = [name for name in removals if name != "comment"]
+        return [name for name in removals if name in resource or name == "password"]
+
     def get_update_parameters(self, resource):
         params = self.module.params
         desired = self._desired_parameters()
-        if "username-claim" in desired and resource.get("username-claim") != desired["username-claim"]:
-            self.client.fail_request("username_claim cannot be changed on an existing OpenID realm.")
+        self._validate_username_claim_update(resource, desired)
         clear_comment = desired.get("comment") in ("", "0")
         if clear_comment:
             desired.pop("comment")
         sync_options = desired.pop("sync-defaults-options", None)
-        updates = self.get_parameter_updates(resource, desired, self.defaults)
-        if sync_options is not None and not self._sync_options_equal(resource.get("sync-defaults-options"), sync_options):
-            updates["sync-defaults-options"] = sync_options
-        removals = [self.api_names.get(name, name) for name in params.get("remove_properties") or []]
-        if clear_comment:
-            removals.append("comment")
-        if params.get("mode") is not None:
-            removals.append("secure")
-        self._merge_formatted_deletions(updates, [name for name in removals if name in resource])
-        if params.get("password") is not None and params.get("update_password", "on_create") == "always":
-            updates["password"] = params["password"]
+        tfa = desired.pop("tfa", None)
+        defaults = dict(self.defaults)
+        if params.get("secure") is not None:
+            defaults.pop("mode", None)
+        updates = self.get_parameter_updates(resource, desired, defaults)
+        self._add_realm_option_updates(resource, updates, sync_options, tfa)
+        removals = self._get_update_removals(resource, params, clear_comment)
+        self._merge_formatted_deletions(updates, removals)
+        self._add_password_update(params, updates)
         return updates
 
     def _write_parameters(self, values):
@@ -802,6 +1014,10 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             parameters["check-connection"] = int(check)
         return parameters
 
+    def _add_password_update(self, params, updates):
+        if params.get("password") is not None and params.get("update_password", "on_create") == "always":
+            updates["password"] = params["password"]
+
     def _read_after_write(self, operation, provider):
         result = self.get_resource(validate_desired=False)
         if result is None:
@@ -810,6 +1026,11 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             return self.client.fail_request("Realm readback provider type does not match the requested configuration.")
         updates = self.get_update_parameters(result)
         updates.pop("password", None)
+        pending_deletions = [name for name in updates.get("delete", "").split(",") if name and name != "password"]
+        if pending_deletions:
+            updates["delete"] = ",".join(pending_deletions)
+        else:
+            updates.pop("delete", None)
         if updates:
             self.client.fail_request("Realm readback does not match the requested configuration.")
         return result
@@ -843,9 +1064,95 @@ class ProxmoxRealmModule(ProxmoxResourceModule):
             result.pop("digest", None)
         return result
 
+    def _validate_operation_options(self):
+        params = self.module.params
+        state = params.get("state", "present")
+        if state not in ("synced", "reset"):
+            if params.get("sync_options") is not None or params.get("wait") is not None:
+                self.module.fail_json(msg="sync_options and wait apply only to state=synced.")
+            return
+        supplied = [name for name in FIELDS + ("password", "check_connection") if params.get(name) is not None]
+        if supplied or params.get("remove_properties") or params.get("update_password", "on_create") != "on_create":
+            self.module.fail_json(msg="Operation states do not reconcile configuration; use state=present in a separate task.")
+        if state == "reset" and (params.get("sync_options") is not None or params.get("wait") is not None):
+            self.module.fail_json(msg="sync_options and wait apply only to state=synced.")
+
+    def _sync_parameters(self, resource):
+        if resource.get("type") not in ("ldap", "ad"):
+            self.module.fail_json(msg="Only LDAP and AD realms support native synchronization.")
+        supplied = self.module.params.get("sync_options") or {}
+        defaults = self._parse_formatted_options(resource.get("sync-defaults-options"))
+        scope = supplied.get("scope") or defaults.get("scope")
+        if scope not in ("users", "groups", "both"):
+            self.module.fail_json(msg="Synchronization scope must be supplied or configured in the realm defaults.")
+        removed = supplied.get("remove_vanished")
+        if removed is not None and (removed != "none" and (not removed or not set(removed.split(";")) <= {"acl", "properties", "entry"})):
+            self.module.fail_json(msg="sync_options.remove_vanished must be none or a semicolon-separated set of acl, properties and entry.")
+        parameters = {
+            self.sync_api_names.get(name, name): int(value) if isinstance(value, bool) else value
+            for name, value in supplied.items() if value is not None
+        }
+        parameters["dry-run"] = int(supplied.get("dry_run") or False)
+        return parameters, scope
+
+    def _execute_sync(self, resource):
+        parameters, scope = self._sync_parameters(resource)
+        dry_run = bool(parameters["dry-run"])
+        realm = resource["realm"]
+        for path in ("/access/realm/{0}".format(realm), "/access/groups"):
+            self.client.validate_pve_permissions(self.api, path)
+        values = {"sync": {"scope": scope, "dry_run": dry_run, "options": parameters}}
+        if self.module.check_mode:
+            self.exit(changed=not dry_run, resource=resource, **values)
+        path = REALM_RESOURCE_PATH.format(quote(realm, safe="")) + "/sync"
+        request = self.call_api if dry_run else self.call_mutation
+        upid = request("Starting realm synchronization", self.api.post, path, **parameters)
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            self.client.fail_request("Realm synchronization did not return a valid task UPID.")
+        try:
+            ProxmoxTask.task_node(upid)
+        except ValueError:
+            self.client.fail_request("Realm synchronization did not return a valid task UPID.")
+        values["task_upid"] = upid
+        if self.module.params.get("wait") is not False:
+            values["task_status"] = ProxmoxTask(self.module, client=self.client).wait_for_task(upid)
+        for path in ("/access/realm/{0}".format(realm), "/access/groups"):
+            self.client.validate_pve_permissions(self.api, path)
+        result = self.get_resource(validate_desired=False)
+        if result is None:
+            self.client.fail_request("Realm could not be read after synchronization submission.")
+        self.exit(changed=not dry_run, resource=result, **values)
+
+    def _execute_reset(self, resource):
+        realm = resource["realm"]
+        if realm not in self.builtin_comments:
+            self.module.fail_json(msg="state=reset applies to built-in PAM/PVE realms; use state=absent to delete other realms.")
+        if self.module.check_mode:
+            self.exit(changed=True, resource={"realm": realm, "type": realm, "comment": self.builtin_comments[realm]})
+        self.call_mutation("Resetting built-in realm configuration", self.api.delete, REALM_RESOURCE_PATH.format(realm))
+        result = self.get_resource(validate_desired=False)
+        if result is None or result.get("type") != realm:
+            self.client.fail_request("Built-in realm could not be read after configuration reset.")
+        self.exit(changed=True, resource=result)
+
+    def execute(self):
+        self._validate_operation_options()
+        state = self.module.params.get("state", "present")
+        if state == "synced":
+            self._execute_sync(self.get_resource())
+            return
+        if state == "reset":
+            self._execute_reset(self.get_resource())
+            return
+        super().execute()
+
     def prepare_result(self, changed, resource=None, **values):
         if resource is not None:
+            original = resource
             resource = {name: value for name, value in resource.items() if name not in ("password", "client-key", "tfa")}
+            if "tfa" in original:
+                options = self._parse_formatted_options(original["tfa"])
+                resource["tfa"] = {name: value for name, value in options.items() if name in ("type", "id", "url", "digits", "step")}
         return super().prepare_result(changed, resource, **values)
 
 
@@ -854,12 +1161,25 @@ def main():
     options.update(
         {
             "realm": {"type": "str", "required": True},
-            "type": {"type": "str", "choices": ["ldap", "ad", "openid"]},
+            "type": {"type": "str", "choices": ["ldap", "ad", "openid", "pam", "pve"]},
             "password": {"type": "str", "no_log": True},
             "update_password": {"type": "str", "choices": ["on_create", "always"], "default": "on_create"},
             "remove_properties": {"type": "list", "elements": "str", "default": []},
             "digest": {"type": "str"},
             "check_connection": {"type": "bool"},
+            "state": {"type": "str", "choices": ["present", "absent", "synced", "reset"], "default": "present"},
+            "allow_protected": {"type": "bool", "default": False},
+            "wait": {"type": "bool"},
+            "sync_options": {
+                "type": "dict", "options": {
+                    "scope": {"type": "str", "choices": ["users", "groups", "both"]},
+                    "enable_new": {"type": "bool"},
+                    "remove_vanished": {"type": "str"},
+                    "full": {"type": "bool"},
+                    "purge": {"type": "bool"},
+                    "dry_run": {"type": "bool", "default": False},
+                },
+            },
         }
     )
     module = AnsibleModule(

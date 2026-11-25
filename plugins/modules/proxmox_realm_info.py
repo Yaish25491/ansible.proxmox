@@ -30,7 +30,7 @@ attributes:
 notes:
 - Requires all privileges of the Administrator role propagated on /access/realm, including reads and check mode.
 - Native detail reads require Realm.Allocate or Sys.Audit on /access/realm; the collection retains its stronger Administrator policy.
-- Passwords, OpenID client keys and legacy realm-wide TFA configuration are excluded from both summaries and detail records.
+- Passwords, OpenID client keys and realm-wide TFA API keys are excluded from both summaries and detail records; nonsecret TFA fields are returned.
 - Detailed provider fields retain the Proxmox API names, including hyphenated OpenID property names. Unset properties are omitted.
 - Does not test connectivity, authenticate users or start identity synchronization.
 """
@@ -50,7 +50,7 @@ realms:
   - Sanitized realm summaries, or one detailed provider configuration.
   - LDAP and AD detail records can contain server1, server2, base_dn, domain and transport or synchronization options.
   - OpenID detail records can contain issuer-url, client-id and claim, scope and group options.
-  - Secrets and legacy TFA configuration are excluded. Unset fields are omitted; default is normalized to a boolean.
+  - Secrets are excluded; TFA metadata contains only nonsecret fields. Unset fields are omitted; default is normalized to a boolean.
   - Native keys containing hyphens require bracket notation, for example C(record['issuer-url']).
   - C(case-sensitive) (int, when configured) - Whether LDAP or AD usernames are case sensitive. The server default is true.
   - C(sync-defaults-options) (str, when configured) - Proxmox property string of LDAP or AD synchronization defaults. Does not execute synchronization.
@@ -139,7 +139,7 @@ realms:
       type: str
       returned: when configured
     filter:
-      description: LDAP user synchronization filter. Stores configuration only; synchronization is never started.
+      description: LDAP user synchronization filter stored in realm configuration.
       type: str
       returned: when configured
     sync_attributes:
@@ -186,6 +186,10 @@ realms:
       description: Deprecated LDAP/AD LDAPS flag retained in legacy configurations; explicit mode migrates it to the modern transport option.
       type: int
       returned: when configured
+    tfa:
+      description: Nonsecret TFA property fields type, id, url, digits and step, with string values. Never includes a Yubico API key.
+      type: dict
+      returned: when configured
 """
 
 import re
@@ -222,6 +226,11 @@ class ProxmoxRealmInfoModule(ProxmoxInfoModule):
         result = []
         for record in records:
             sanitized = {name: value for name, value in record.items() if name not in ("password", "client-key", "tfa")}
+            if "tfa" in record:
+                options = self._parse_formatted_options(record["tfa"])
+                if record["tfa"] in ("oath", "yubico"):
+                    options = {"type": record["tfa"]}
+                sanitized["tfa"] = {name: value for name, value in options.items() if name in ("type", "id", "url", "digits", "step")}
             sanitized["default"] = bool(int(sanitized.get("default") or 0))
             result.append(sanitized)
         return sorted(result, key=lambda item: item["realm"])
