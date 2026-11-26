@@ -1,0 +1,285 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Select the owned provider's imported identifiers
+  ansible.builtin.set_fact:
+    realm_sync_primary: '{{ realm_sync_user_names[0] }}@{{ realm_sync_fixture.realm }}'
+    realm_sync_vanished: '{{ realm_sync_user_names[1] }}@{{ realm_sync_fixture.realm }}'
+    realm_sync_group: '{{ realm_sync_group_name }}-{{ realm_sync_fixture.realm }}'
+    realm_sync_primary_dn: 'uid={{ realm_sync_user_names[0] }},dc=ansible,dc=invalid'
+    realm_sync_vanished_dn: 'uid={{ realm_sync_user_names[1] }},dc=ansible,dc=invalid'
+- name: Populate only synthetic directory records
+  ansible.builtin.set_fact:
+    realm_sync_initial_entries:
+      - dn: '{{ realm_sync_primary_dn }}'
+        attributes:
+          objectClass: [inetOrgPerson, user]
+          uid: ['{{ realm_sync_user_names[0] }}']
+          sAMAccountName: ['{{ realm_sync_user_names[0] }}']
+          firstname: [Primary]
+          email: [primary@example.invalid]
+      - dn: '{{ realm_sync_vanished_dn }}'
+        attributes:
+          objectClass: [inetOrgPerson, user]
+          uid: ['{{ realm_sync_user_names[1] }}']
+          sAMAccountName: ['{{ realm_sync_user_names[1] }}']
+          firstname: [Vanished]
+      - dn: 'cn={{ realm_sync_group_name }},dc=ansible,dc=invalid'
+        attributes:
+          objectClass: [groupOfNames]
+          cn: ['{{ realm_sync_group_name }}']
+          member: ['{{ realm_sync_primary_dn }}', '{{ realm_sync_vanished_dn }}']
+- name: Write the initial directory dataset
+  ansible.builtin.copy:
+    dest: '{{ realm_ldap_directory.path }}/entries.json'
+    content: '{{ realm_sync_initial_entries | to_nice_json }}'
+    mode: '0600'
+- name: Persist the owned realm before testing directory connectivity
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    type: '{{ realm_sync_fixture.type }}'
+    server1: '{{ realm_ldap_address.host }}'
+    port: '{{ realm_ldap_address.port }}'
+    mode: ldap
+    secure: true
+    domain: '{{ "ansible.invalid" if realm_sync_fixture.type == "ad" else omit }}'
+    base_dn: dc=ansible,dc=invalid
+    user_attr: '{{ "uid" if realm_sync_fixture.type == "ldap" else "sAMAccountName" }}'
+    bind_dn: cn=fixture,dc=ansible,dc=invalid
+    password: EXAMPLE-LDAP-fixture
+    check_connection: false
+    group_name_attr: cn
+    tfa: type=oath,digits=6,step=30
+    sync_defaults_options: scope=both,enable-new=0,full=0,purge=0
+  register: realm_sync_configured
+- name: Verify native bind connectivity on the persisted owned realm
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    comment: Owned LDAP sync fixture
+    check_connection: true
+- name: Independently verify the native legacy and TFA options
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_sync_fixture.realm }}'
+  register: realm_sync_config_info
+- name: Require effective LDAP mode precedence and secret-free TFA metadata
+  ansible.builtin.assert:
+    that:
+      - realm_sync_configured is changed
+      - realm_sync_config_info.realms[0].mode == 'ldap'
+      - realm_sync_config_info.realms[0].secure | bool
+      - realm_sync_config_info.realms[0].tfa.type == 'oath'
+      - realm_sync_config_info.realms[0].tfa.key is not defined
+- name: Predict synchronization without contacting or mutating the directory
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+  check_mode: true
+  register: realm_sync_prediction
+- name: Run native dry synchronization using stored scope defaults
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      dry_run: true
+  register: realm_sync_preview
+- name: Independently verify neither preview imported users
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: ['{{ realm_sync_primary }}', '{{ realm_sync_vanished }}']
+  register: realm_sync_preview_users
+- name: Independently verify neither preview imported groups
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ realm_sync_group }}'
+  register: realm_sync_preview_group
+- name: Require accurate preview flags and no imported state
+  ansible.builtin.assert:
+    that:
+      - realm_sync_prediction is changed
+      - realm_sync_prediction.task_upid is not defined
+      - realm_sync_preview is not changed
+      - realm_sync_preview.task_status.exitstatus == 'OK'
+      - realm_sync_preview.sync.scope == 'both'
+      - realm_sync_preview_users.results | map(attribute='users') | flatten | length == 0
+      - realm_sync_preview_group.groups == []
+- name: Import only disabled users with all native boolean overrides
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: users
+      enable_new: false
+      full: false
+      purge: false
+      remove_vanished: none
+  register: realm_sync_users
+- name: Independently inspect imported users
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: ['{{ realm_sync_primary }}', '{{ realm_sync_vanished }}']
+  register: realm_sync_users_info
+- name: Independently verify users-only sync did not import a group
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ realm_sync_group }}'
+  register: realm_sync_users_group_info
+- name: Require actual disabled imports and mapped properties
+  ansible.builtin.assert:
+    that:
+      - realm_sync_users is changed
+      - realm_sync_users.task_status.exitstatus == 'OK'
+      - realm_sync_users_info.results | map(attribute='users') | flatten | length == 2
+      - not realm_sync_users_info.results[0].users[0].enable
+      - not realm_sync_users_info.results[1].users[0].enable
+      - realm_sync_users_info.results[0].users[0].firstname == 'Primary'
+      - realm_sync_users_info.results[0].users[0].email == 'primary@example.invalid'
+      - realm_sync_users_group_info.groups == []
+- name: Import only groups and their directory memberships
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: groups
+  register: realm_sync_groups
+- name: Independently inspect imported group membership
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ realm_sync_group }}'
+  register: realm_sync_groups_info
+- name: Require actual group scope and both directory members
+  ansible.builtin.assert:
+    that:
+      - realm_sync_groups is changed
+      - realm_sync_groups_info.groups[0].members | sort == [realm_sync_primary, realm_sync_vanished] | sort
+- name: Capture imported users including their synchronized group memberships
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: ['{{ realm_sync_primary }}', '{{ realm_sync_vanished }}']
+  register: realm_sync_before_repeat
+- name: Repeat both-scope synchronization as an explicit operation
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: both
+  register: realm_sync_repeated
+- name: Independently verify a repeated sync preserved imported users
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: ['{{ realm_sync_primary }}', '{{ realm_sync_vanished }}']
+  register: realm_sync_repeated_info
+- name: Require operation-level changed reporting and stable imported data
+  ansible.builtin.assert:
+    that:
+      - realm_sync_repeated is changed
+      - realm_sync_repeated_info.results | map(attribute='users') | list == realm_sync_before_repeat.results | map(attribute='users') | list
+- name: Add only the owned vanished user's nonpropagating deny binding
+  proxmox_realm_acl_fixture:
+    userid: '{{ realm_sync_vanished }}'
+    owned_users: '{{ realm_sync_owned_users }}'
+- name: Remove a directory user, group and the surviving user's first name
+  ansible.builtin.copy:
+    dest: '{{ realm_ldap_directory.path }}/entries.json'
+    content: >-
+      {{ [{'dn': realm_sync_primary_dn, 'attributes':
+           {'objectClass': ['inetOrgPerson', 'user'], 'uid': [realm_sync_user_names[0]],
+            'sAMAccountName': [realm_sync_user_names[0]], 'email': ['primary@example.invalid']}}] | to_nice_json }}
+    mode: '0600'
+- name: Preview destructive property and ACL removal without writes
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: both
+      remove_vanished: acl;properties
+      dry_run: true
+  register: realm_sync_removal_preview
+- name: Independently verify the native preview preserved the owned binding
+  proxmox_realm_acl_fixture:
+    userid: '{{ realm_sync_vanished }}'
+    owned_users: '{{ realm_sync_owned_users }}'
+    read_only: true
+  register: realm_sync_acl_preview
+- name: Independently verify the native preview preserved local properties
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ realm_sync_primary }}'
+  register: realm_sync_properties_preview
+- name: Require the removal preview to leave actual state intact
+  ansible.builtin.assert:
+    that:
+      - realm_sync_removal_preview is not changed
+      - realm_sync_acl_preview.binding is not none
+      - realm_sync_properties_preview.users[0].firstname == 'Primary'
+- name: Remove vanished ACLs and properties while preserving identity records
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: both
+      remove_vanished: acl;properties
+  register: realm_sync_properties_removed
+- name: Independently inspect removal of the owned binding
+  proxmox_realm_acl_fixture:
+    userid: '{{ realm_sync_vanished }}'
+    owned_users: '{{ realm_sync_owned_users }}'
+    read_only: true
+  register: realm_sync_acl_removed
+- name: Independently inspect both users after property-only removal
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: ['{{ realm_sync_primary }}', '{{ realm_sync_vanished }}']
+  register: realm_sync_properties_info
+- name: Require ACL and property removal without deleting users
+  ansible.builtin.assert:
+    that:
+      - realm_sync_properties_removed is changed
+      - realm_sync_acl_removed.binding is none
+      - realm_sync_properties_info.results[0].users[0].firstname == ''
+      - realm_sync_properties_info.results[1].users | length == 1
+- name: Remove vanished user and group entries after their ACLs are gone
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: both
+      remove_vanished: entry
+  register: realm_sync_entries_removed
+- name: Independently inspect removal of the vanished user
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ realm_sync_vanished }}'
+  register: realm_sync_vanished_info
+- name: Independently inspect removal of the vanished group
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ realm_sync_group }}'
+  register: realm_sync_vanished_group_info
+- name: Require native entry removal and preserved scope semantics
+  ansible.builtin.assert:
+    that:
+      - realm_sync_entries_removed is changed
+      - realm_sync_vanished_info.users == []
+      - realm_sync_vanished_group_info.groups == []
+- name: Remove the write-only bind password and optional legacy settings
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    remove_properties: [password, secure, tfa]
+  register: realm_sync_secret_removed
+- name: Verify password removal through a failing native read-only bind
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_sync_fixture.realm }}'
+    state: synced
+    sync_options:
+      scope: users
+      dry_run: true
+  register: realm_sync_missing_password
+  ignore_errors: true
+- name: Independently read the resulting realm configuration
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_sync_fixture.realm }}'
+  register: realm_sync_final_config
+- name: Require native credential removal and accurate task failure flags
+  ansible.builtin.assert:
+    that:
+      - realm_sync_secret_removed is changed
+      - realm_sync_missing_password is failed
+      - realm_sync_missing_password is not changed
+      - "'missing password' in realm_sync_missing_password.task_exit_status"
+      - realm_sync_final_config.realms[0].secure is not defined
+      - realm_sync_final_config.realms[0].tfa is not defined

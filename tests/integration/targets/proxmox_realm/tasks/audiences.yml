@@ -1,0 +1,38 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Set additional OpenID audiences on the owned realm
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    audiences: 'ansible-fixture-client https://audience.example.invalid'
+  register: realm_audiences_created
+- name: Repeat additional OpenID audiences
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    audiences: 'ansible-fixture-client https://audience.example.invalid'
+  register: realm_audiences_repeated
+- name: Independently verify additional OpenID audiences
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_audiences_actual
+- name: Verify exact audience values and idempotency
+  ansible.builtin.assert:
+    that:
+      - realm_audiences_created is changed
+      - realm_audiences_repeated is not changed
+      - realm_audiences_actual.realms[0].audiences == 'ansible-fixture-client https://audience.example.invalid'
+- name: Remove additional OpenID audiences
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    remove_properties: [audiences]
+  register: realm_audiences_removed
+- name: Independently verify audience removal
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_audiences_absent
+- name: Verify removed audiences
+  ansible.builtin.assert:
+    that:
+      - realm_audiences_removed is changed
+      - realm_audiences_absent.realms[0].audiences is not defined

@@ -109,8 +109,8 @@ configuration.
 
 ## Shared LXC integration test prerequisites
 
-The `proxmox_lxc_template`, `proxmox_lxc_clone`, and `proxmox_lxc_snapshot`
-integration targets create LXC containers from
+The `proxmox_lxc_template`, `proxmox_lxc_clone`, `proxmox_lxc_snapshot`, and
+`proxmox_lxc_migrate` integration targets create LXC containers from
 `fedora-44-default_20260713_amd64.tar.xz` by default. The `proxmox_lxc` module
 looks up an unqualified template in `local:vztmpl` on the selected
 `proxmox_node`; it does not download the archive. Stage the default template on
@@ -152,6 +152,20 @@ the target. Generate the private integration configuration using the
 
 ```bash
 ansible-test integration proxmox_lxc_clone
+```
+
+## LXC migration integration tests
+
+The `proxmox_lxc_migrate` target checks migration preconditions, verifies that a
+running container requires `restart` in both normal and check mode,
+then predicts and performs a restart migration between two cluster nodes. Use
+the shared [LXC prerequisites](#shared-lxc-integration-test-prerequisites),
+generate the private integration configuration, and set
+`lxc_migrate_source_node` and `lxc_migrate_target_node` if the defaults do not
+match the test cluster. Run from the collection root:
+
+```bash
+ansible-test integration proxmox_lxc_migrate
 ```
 
 ## Node syslog information integration tests
@@ -236,3 +250,42 @@ must fail readback verification and preserve the original metadata; the target
 reports that outcome separately from successful clearing and repeated no-op
 coverage on supported servers.
 Run only with explicit authorization to create and remove these test identities.
+## Authentication realm integration tests
+
+The `proxmox_realm` target tests configuration lifecycle together with
+`proxmox_realm_info`, then independently verifies synchronized identities with
+`proxmox_user_info` and `proxmox_group_info`. Run
+`ansible-test integration proxmox_realm` using the shared private integration
+configuration, only with authorization to create and remove temporary realms,
+disabled users, groups and nonpropagating NoAccess ACL fixtures. It refuses
+pre-existing realms, imported identities, suffixed groups and related orphaned
+ACLs before claiming ownership.
+
+Configuration scenarios use reserved `.invalid` provider addresses and cover
+LDAP, AD and OpenID creation, reconciliation, omission, explicit removal,
+idempotency, digest updates, check mode and deletion. Synchronization scenarios
+start an owned, read-only LDAP fixture on an ephemeral controller port. The
+Proxmox node must be able to reach that address and port. The target discovers
+the controller's address from its route to `proxmox_api_host`; override
+`realm_test_ldap_advertise_host` for runners behind NAT or with multiple network
+interfaces. The target does not change firewall rules or network configuration.
+
+Both LDAP and AD scenarios exercise bind connectivity, native dry runs,
+users/groups/both scopes, disabled-user imports, repeated synchronization,
+property removal, ACL cleanup, vanished-entry removal and stored bind-password
+removal. The fixture contains only synthetic records and a dummy bind password;
+it does not authenticate real users or validate OpenID login flows. Built-in
+realm configuration and reset are predicted only in check mode. No test changes
+the controller's realm or the cluster login default.
+
+Cleanup attempts every owned binding, group and user before deleting the owned
+realms, continues after individual errors and independently verifies removal.
+An outer `always` also stops the owned LDAP service and verifies removal of its
+allocated directory. A failed verification remains a test failure.
+
+Provider tests verify LDAP/AD transport, fallback servers, boolean defaults,
+and OpenID claim/group/userinfo settings with independent reads. Bind passwords
+and client keys are dummy values for disconnected owned fixtures, and secret
+fields are excluded from results. Additional OpenID audience tests require
+`libpve-access-control >= 9.1.1`; enable them explicitly with
+`realm_test_audiences_supported: true` only on a compatible server.

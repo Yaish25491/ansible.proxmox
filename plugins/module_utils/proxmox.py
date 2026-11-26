@@ -166,16 +166,16 @@ class ProxmoxClient:
         """Remember a completed mutation for subsequent failure results."""
         self._changed = True
 
-    def fail_request(self, operation, exception=None, parameters=None):
+    def fail_request(self, operation, exception=None, parameters=None, **details):
         """Report a request or validation failure, preserving completed mutations.
 
         Args:
             operation: API operation description, or the full message without an exception.
             exception: Optional API exception, retained as text in 'api_error'.
             parameters: Submitted parameters used to identify HTTP 400 field errors.
+            **details: Additional structured failure fields, such as task identifiers.
         """
         message = operation
-        details = {}
         if exception is not None:
             details["error_type"] = type(exception).__name__
             status = self.exception_status(exception)

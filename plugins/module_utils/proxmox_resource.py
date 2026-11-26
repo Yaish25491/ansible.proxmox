@@ -97,26 +97,6 @@ class ProxmoxResourceModule(ProxmoxBase):
             fields.append("{0}={1}".format(option, value))
         return ",".join(fields)
 
-    @staticmethod
-    def _parse_formatted_options(value):
-        """Parse a Proxmox property string without interpreting field values.
-
-        Args:
-            value: Comma-separated API string, such as 'virtio,bridge=vmbr0'.
-
-        Returns:
-            String fields by key; unkeyed fields map to an empty string.
-            Empty or non-string input produces an empty mapping.
-        """
-        if not isinstance(value, str) or not value:
-            return {}
-        options = {}
-        for item in value.split(","):
-            key, separator, field_value = item.partition("=")
-            if key.strip():
-                options[key.strip()] = field_value.strip() if separator else ""
-        return options
-
     def _formatted_entry_name(self, parent, entry, prefix, name_field="name"):
         """Validate an entry's API name, failing the module for invalid names.
 

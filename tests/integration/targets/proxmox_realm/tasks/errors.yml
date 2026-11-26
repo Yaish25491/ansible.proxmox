@@ -1,0 +1,91 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read realm summaries without changing state
+  ansible.proxmox.proxmox_realm_info:
+  register: realm_summaries
+  no_log: true
+- name: Read summaries again in check mode
+  ansible.proxmox.proxmox_realm_info:
+  check_mode: true
+  register: realm_summaries_check
+  no_log: true
+- name: Verify read-only summary behavior
+  ansible.builtin.assert:
+    that:
+      - realm_summaries is not changed
+      - realm_summaries_check is not changed
+      - realm_summaries.realms | selectattr('realm', 'equalto', 'pve') | list | length == 1
+      - realm_summaries_check.realms | selectattr('realm', 'equalto', 'pam') | list | length == 1
+  no_log: true
+- name: Reject management of a built-in realm
+  ansible.proxmox.proxmox_realm:
+    realm: pve
+    state: absent
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: realm_protected_errors
+  failed_when: false
+- name: Verify both builtin requests were rejected
+  ansible.builtin.assert:
+    that:
+      - realm_protected_errors.results | map(attribute='msg') | select('search', 'cannot be managed') | list | length == 2
+- name: Reject creation without a provider type
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_test_fixtures[0].realm }}'
+  check_mode: true
+  register: realm_missing_type
+  failed_when: false
+- name: Verify useful creation validation
+  ansible.builtin.assert:
+    that:
+      - "'type is required' in realm_missing_type.msg"
+- name: Independently capture built-in settings before operation predictions
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ item }}'
+  loop: [pam, pve]
+  register: realm_builtin_before
+- name: Predict supported built-in configuration with explicit opt-in
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ item }}'
+    allow_protected: true
+    comment: Owned prediction only
+  loop: [pam, pve]
+  check_mode: true
+  register: realm_builtin_prediction
+- name: Predict native reset without modifying built-in authentication
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ item }}'
+    allow_protected: true
+    state: reset
+  loop: [pam, pve]
+  check_mode: true
+  register: realm_builtin_reset_prediction
+- name: Independently reread built-in settings after predictions
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ item }}'
+  loop: [pam, pve]
+  register: realm_builtin_after
+- name: Require supported operation predictions and unchanged actual authentication
+  ansible.builtin.assert:
+    that:
+      - realm_builtin_prediction.results | selectattr('changed') | list | length == 2
+      - realm_builtin_reset_prediction.results | selectattr('changed') | list | length == 2
+      - realm_builtin_after.results | map(attribute='realms') | list == realm_builtin_before.results | map(attribute='realms') | list
+- name: Reject a native synchronization request for a non-directory provider
+  ansible.proxmox.proxmox_realm:
+    realm: pve
+    allow_protected: true
+    state: synced
+    sync_options:
+      scope: both
+  check_mode: true
+  register: realm_builtin_sync_error
+  ignore_errors: true
+- name: Require the native provider restriction without submitting a task
+  ansible.builtin.assert:
+    that:
+      - realm_builtin_sync_error is failed
+      - realm_builtin_sync_error is not changed
+      - "'Only LDAP and AD' in realm_builtin_sync_error.msg"
