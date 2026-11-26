@@ -1,0 +1,37 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+realm_test_prefix: ansible-realm-{{ integration_resource_ids | join('') }}
+# Enable only when the server has libpve-access-control >= 9.1.1.
+realm_test_audiences_supported: false
+# The Proxmox node must be able to reach this controller-hosted, read-only fixture.
+# Override for runners behind NAT; this never changes host networking or firewalls.
+realm_test_ldap_advertise_host: ''
+# Fixed port opened for the Proxmox node to reach the runner-hosted fixture.
+realm_test_ldap_port: 41365
+realm_sync_user_names:
+  - ansible-{{ integration_resource_ids | join('') }}-a
+  - ansible-{{ integration_resource_ids | join('') }}-b
+realm_sync_group_name: ansible-{{ integration_resource_ids | join('') }}-g
+realm_sync_fixtures: '{{ realm_test_fixtures | rejectattr("type", "equalto", "openid") | list }}'
+realm_sync_owned_users: '{{ realm_sync_user_names | product(realm_sync_fixtures | map(attribute="realm")) | map("join", "@") | list }}'
+realm_sync_owned_groups: '{{ [realm_sync_group_name] | product(realm_sync_fixtures | map(attribute="realm")) | map("join", "-") | list }}'
+realm_test_fixtures:
+  - realm: '{{ realm_test_prefix }}-ldap'
+    type: ldap
+    server1: ldap.example.invalid
+    base_dn: dc=example,dc=invalid
+    user_attr: uid
+    password: EXAMPLE-disconnected-fixture
+    sync_defaults_options: scope=users,enable-new=0
+  - realm: '{{ realm_test_prefix }}-ad'
+    type: ad
+    server1: ad.example.invalid
+    domain: example.invalid
+    password: EXAMPLE-disconnected-fixture
+    sync_defaults_options: scope=users,enable-new=0
+  - realm: '{{ realm_test_prefix }}-oidc'
+    type: openid
+    issuer_url: https://openid.example.invalid
+    client_id: ansible-realm-test

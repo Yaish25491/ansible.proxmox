@@ -1,0 +1,35 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove LXC clone fixtures
+  ansible.proxmox.proxmox_lxc: # noqa: args[module] connection options come from the enclosing module_defaults
+    node: "{{ proxmox_node }}"
+    vmid: "{{ item }}"
+    state: absent
+    power_cycle: 'off'
+  loop:
+    - "{{ lxc_clone_new_vmid }}"
+    - "{{ lxc_clone_source_vmid }}"
+  failed_when: false
+
+- name: Verify LXC clone fixtures are absent
+  ansible.proxmox.proxmox_lxc_info: # noqa: args[module] connection options come from the enclosing module_defaults
+    node: "{{ proxmox_node }}"
+    vmid: "{{ item }}"
+  loop:
+    - "{{ lxc_clone_new_vmid }}"
+    - "{{ lxc_clone_source_vmid }}"
+  register: lxc_clone_cleanup_verification
+  ignore_errors: true
+
+- name: Assert both LXC clone fixtures were removed
+  ansible.builtin.assert:
+    that:
+      - lxc_clone_cleanup_verification is not failed
+      - lxc_clone_cleanup_verification.results | length == 2
+      - >-
+        lxc_clone_cleanup_verification.results
+        | map(attribute='lxcs')
+        | flatten
+        | length == 0

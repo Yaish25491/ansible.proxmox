@@ -1,0 +1,39 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Snapshot the protected built-in role
+  ansible.proxmox.proxmox_role_info:
+    roleid: Administrator
+  register: role_builtin_before
+- name: Require a populated built-in role before testing its protections
+  ansible.builtin.assert:
+    that:
+      - role_builtin_before.roles | length == 1
+      - role_builtin_before.roles[0].special
+      - role_builtin_before.roles[0].privileges | length > 0
+- name: Exercise rejected requests and protected no-ops in both modes
+  ansible.builtin.include_tasks: rejected_requests.yml
+  loop: [false, true]
+  loop_control:
+    loop_var: role_error_check_mode
+- name: Independently verify the built-in role after rejected requests
+  ansible.proxmox.proxmox_role_info:
+    roleid: Administrator
+  register: role_builtin_after
+- name: Require unchanged built-in privileges and flags
+  ansible.builtin.assert:
+    that:
+      - role_builtin_after is not changed
+      - role_builtin_after.roles == role_builtin_before.roles
+- name: Independently verify rejected requests left no custom role
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ item }}'
+  register: role_rejected_actual
+  loop: '{{ [role_test_id, role_test_reserved_prefix] }}'
+- name: Require absent roles after rejected creation requests
+  ansible.builtin.assert:
+    that:
+      - item is not changed
+      - item.roles == []
+  loop: '{{ role_rejected_actual.results }}'

@@ -1,0 +1,37 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the selected populated role in check mode
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  check_mode: true
+  register: role_selected_check
+- name: List all roles in normal and check mode
+  ansible.proxmox.proxmox_role_info:
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: role_lists
+  no_log: true
+- name: Require selected and list information to agree on the owned role
+  ansible.builtin.assert:
+    that:
+      - role_selected_check is not changed
+      - role_selected_check.roles == role_actual.roles
+      - item is not changed
+      - item.roles | selectattr('roleid', 'equalto', role_test_id) | list == role_actual.roles
+      - item.roles | selectattr('roleid', 'equalto', 'Administrator') | map(attribute='special') | list == [true]
+  loop: '{{ role_lists.results }}'
+  no_log: true
+- name: Read an absent selected role in normal and check mode
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_missing }}'
+  check_mode: '{{ item }}'
+  loop: [false, true]
+  register: role_missing_reads
+- name: Require unchanged empty results for the absent role
+  ansible.builtin.assert:
+    that:
+      - item is not changed
+      - item.roles == []
+  loop: '{{ role_missing_reads.results }}'

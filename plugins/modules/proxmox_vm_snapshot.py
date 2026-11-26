@@ -51,6 +51,13 @@ options:
     type: str
     choices: [present, absent, rollback]
     default: present
+  start:
+    description:
+      - Whether to start the VM after a successful rollback.
+      - Proxmox automatically starts the VM when the snapshot includes RAM, regardless of this option.
+      - This option is used only with C(state=rollback).
+    type: bool
+    default: false
   vmstate:
     description:
       - Include the VM RAM when creating a snapshot.
@@ -70,6 +77,7 @@ seealso:
 notes:
   - Snapshot support depends on the VM disks, storage, and current configuration.
   - Rollback is not idempotent; each invocation restores the snapshot and reports a change.
+  - The VM is automatically started after rollback when the snapshot includes RAM, regardless of C(start).
   - The API identity must have the C(Administrator) role privileges propagated on C(/vms).
 """
 
@@ -106,6 +114,7 @@ EXAMPLES = r"""
     vmid: 100
     snapname: before_upgrade
     state: rollback
+    start: true
 
 - name: Delete a snapshot
   ansible.proxmox.proxmox_vm_snapshot:
@@ -163,6 +172,7 @@ class ProxmoxVmSnapshotModule(ProxmoxResourceModule):
             task_upid = self.call_mutation(
                 "Rolling back VM {0} to snapshot {1}".format(self.module.params["vmid"], snapname),
                 self._snapshot_api(snapname).rollback.post,
+                start=int(self.module.params["start"]),
             )
             self._wait_for_snapshot_task(task_upid)
         self.exit(changed=True, resource=resource)
@@ -287,6 +297,7 @@ def main():
             "vmid": {"type": "int", "required": True},
             "snapname": {"type": "str", "required": True},
             "state": {"type": "str", "choices": ["present", "absent", "rollback"], "default": "present"},
+            "start": {"type": "bool", "default": False},
             "description": {"type": "str"},
             "vmstate": {"type": "bool", "default": False},
         }),

@@ -1,0 +1,10 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+lxc_migrate_source_node: pve01
+lxc_migrate_target_node: pve02
+lxc_migrate_vmid: "{{ integration_resource_ids[0] | int }}"
+lxc_migrate_template: >-
+  {{ proxmox_lxc_template
+  | default('fedora-44-default_20260713_amd64.tar.xz') }}

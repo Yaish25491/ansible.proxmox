@@ -1,0 +1,40 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Request termination of only this invocation's LDAP fixture
+  ansible.builtin.command:
+    argv:
+      - '{{ ansible_playbook_python }}'
+      - '{{ role_path }}/files/realm_ldap_server.py'
+      - stop
+      - --directory
+      - '{{ realm_ldap_directory.path }}'
+  register: realm_ldap_stopped
+  changed_when: true
+  failed_when: false
+- name: Independently inspect the service shutdown acknowledgement
+  ansible.builtin.stat:
+    path: '{{ realm_ldap_directory.path }}/stopped'
+  register: realm_ldap_stop_ack
+- name: Inspect whether the service reached its listening state
+  ansible.builtin.stat:
+    path: '{{ realm_ldap_directory.path }}/ready.json'
+  register: realm_ldap_ready_ack
+- name: Require termination before removing the owned service directory
+  ansible.builtin.assert:
+    that:
+      - realm_ldap_stopped.rc == 0
+      - realm_ldap_stop_ack.stat.exists or not realm_ldap_ready_ack.stat.exists
+- name: Remove only the invocation's allocated service directory
+  ansible.builtin.file:
+    path: '{{ realm_ldap_directory.path }}'
+    state: absent
+- name: Independently verify directory removal
+  ansible.builtin.stat:
+    path: '{{ realm_ldap_directory.path }}'
+  register: realm_ldap_directory_removed
+- name: Require removal of the owned directory
+  ansible.builtin.assert:
+    that:
+      - not realm_ldap_directory_removed.stat.exists

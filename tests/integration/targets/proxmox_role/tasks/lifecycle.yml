@@ -1,0 +1,190 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict custom role creation
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - VM.Audit
+      - Sys.Audit
+  register: role_prediction
+  check_mode: true
+- name: Verify the role prediction
+  ansible.builtin.assert:
+    that:
+      - role_prediction is changed
+      - role_prediction.role.privileges == ['Sys.Audit', 'VM.Audit']
+- name: Verify prediction did not create the role
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_after_prediction
+- name: Require no role after check mode
+  ansible.builtin.assert:
+    that:
+      - role_after_prediction.roles == []
+- name: Create the owned custom role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - VM.Audit
+      - Sys.Audit
+  register: role_created
+- name: Independently read the custom role
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_actual
+- name: Verify actual privileges and custom role flag
+  ansible.builtin.assert:
+    that:
+      - role_created is changed
+      - role_actual is not changed
+      - role_actual.roles[0].privileges == ['Sys.Audit', 'VM.Audit']
+      - not role_actual.roles[0].special
+- name: Exercise list selected missing and check-mode information reads
+  ansible.builtin.include_tasks: information.yml
+- name: Omit privileges on a populated role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+  register: role_populated_omitted
+- name: Independently verify populated privileges after omission
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_after_omission
+- name: Require omission to preserve populated privileges
+  ansible.builtin.assert:
+    that:
+      - role_populated_omitted is not changed
+      - role_after_omission.roles == role_actual.roles
+- name: Repeat with reordered duplicated privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Sys.Audit
+      - VM.Audit
+      - Sys.Audit
+  register: role_repeat
+- name: Verify privilege set idempotency
+  ansible.builtin.assert:
+    that:
+      - role_repeat is not changed
+- name: Predict replacement with a different populated privilege set
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Sys.Audit
+  check_mode: true
+  register: role_update_prediction
+- name: Independently verify prediction preserved the original privileges
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_before_update
+- name: Require a changed prediction without an actual update
+  ansible.builtin.assert:
+    that:
+      - role_update_prediction is changed
+      - role_update_prediction.role.privileges == ['Sys.Audit']
+      - role_before_update.roles == role_actual.roles
+- name: Replace the owned role privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Sys.Audit
+  register: role_updated
+- name: Independently read the replacement privilege set
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_after_update
+- name: Require actual privilege replacement
+  ansible.builtin.assert:
+    that:
+      - role_updated is changed
+      - role_after_update.roles[0].privileges == ['Sys.Audit']
+- name: Repeat the replacement privilege set
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges:
+      - Sys.Audit
+  register: role_update_repeat
+- name: Require repeated replacement to be unchanged
+  ansible.builtin.assert:
+    that:
+      - role_update_repeat is not changed
+- name: Predict clearing privileges
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges: []
+  register: role_clear_prediction
+  check_mode: true
+- name: Verify predicted clearing retained actual privileges
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_before_clear
+- name: Verify clearing prediction without a write
+  ansible.builtin.assert:
+    that:
+      - role_clear_prediction is changed
+      - role_clear_prediction.role.privileges == []
+      - role_before_clear.roles[0].privileges == ['Sys.Audit']
+- name: Clear the owned role privileges explicitly
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    privileges: []
+  register: role_cleared
+- name: Independently verify the empty privilege set
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_empty
+- name: Require an actual empty privilege set
+  ansible.builtin.assert:
+    that:
+      - role_cleared is changed
+      - role_empty.roles[0].privileges == []
+- name: Omit privileges to preserve the role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+  register: role_omitted
+- name: Verify omitted privileges cause no change
+  ansible.builtin.assert:
+    that:
+      - role_omitted is not changed
+- name: Predict deletion of the custom role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    state: absent
+  register: role_delete_prediction
+  check_mode: true
+- name: Verify predicted deletion retained the role
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_still_present
+- name: Verify deletion check mode
+  ansible.builtin.assert:
+    that:
+      - role_delete_prediction is changed
+      - role_still_present.roles | length == 1
+- name: Delete the owned role
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    state: absent
+  register: role_deleted
+- name: Verify role removal independently
+  ansible.proxmox.proxmox_role_info:
+    roleid: '{{ role_test_id }}'
+  register: role_removed
+- name: Require verified role removal
+  ansible.builtin.assert:
+    that:
+      - role_deleted is changed
+      - role_removed.roles == []
+- name: Repeat role deletion
+  ansible.proxmox.proxmox_role:
+    roleid: '{{ role_test_id }}'
+    state: absent
+  register: role_absent_repeat
+- name: Verify repeated deletion is unchanged
+  ansible.builtin.assert:
+    that:
+      - role_absent_repeat is not changed
+- name: Exercise role creation with omitted privileges
+  ansible.builtin.include_tasks: default_creation.yml

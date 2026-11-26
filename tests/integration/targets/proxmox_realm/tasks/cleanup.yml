@@ -1,0 +1,77 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Remove owned deny bindings before identities
+  proxmox_realm_acl_fixture:
+    userid: '{{ item }}'
+    owned_users: '{{ realm_sync_owned_users }}'
+    state: absent
+  loop: '{{ realm_sync_owned_users }}'
+  register: realm_acl_cleanup
+  failed_when: false
+- name: Remove every owned imported group before its members and realm
+  ansible.proxmox.proxmox_group:
+    groupid: '{{ item }}'
+    state: absent
+  loop: '{{ realm_sync_owned_groups }}'
+  register: realm_group_cleanup
+  failed_when: false
+- name: Remove every owned imported user before its realm
+  ansible.proxmox.proxmox_user:
+    userid: '{{ item }}'
+    state: absent
+  loop: '{{ realm_sync_owned_users }}'
+  register: realm_user_cleanup
+  failed_when: false
+- name: Independently verify all owned bindings were removed
+  proxmox_realm_acl_fixture:
+    userid: '{{ item }}'
+    owned_users: '{{ realm_sync_owned_users }}'
+    read_only: true
+  loop: '{{ realm_sync_owned_users }}'
+  register: realm_acl_cleanup_verify
+  failed_when: false
+- name: Independently verify all owned imported groups were removed
+  ansible.proxmox.proxmox_group_info:
+    groupid: '{{ item }}'
+  loop: '{{ realm_sync_owned_groups }}'
+  register: realm_group_cleanup_verify
+  failed_when: false
+- name: Independently verify all owned imported users were removed
+  ansible.proxmox.proxmox_user_info:
+    userid: '{{ item }}'
+  loop: '{{ realm_sync_owned_users }}'
+  register: realm_user_cleanup_verify
+  failed_when: false
+- name: Attempt removal of every owned realm even after individual errors
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ item.realm }}'
+    state: absent
+  loop: '{{ realm_test_fixtures }}'
+  register: realm_cleanup_results
+  failed_when: false
+- name: Independently inspect each owned realm after all cleanup attempts
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ item.realm }}'
+  loop: '{{ realm_test_fixtures }}'
+  register: realm_cleanup_verify
+  failed_when: false
+- name: Require independent removal verification for every owned realm
+  ansible.builtin.assert:
+    that:
+      - item.realms is defined
+      - item.realms == []
+    fail_msg: Owned realm cleanup could not be verified; inspect the preceding cleanup results.
+  loop: '{{ realm_cleanup_verify.results }}'
+  loop_control:
+    label: '{{ item.item.realm }}'
+- name: Require independent binding and identity cleanup evidence after all attempts
+  ansible.builtin.assert:
+    that:
+      - realm_acl_cleanup_verify.results | selectattr('binding', 'defined') | list | length == realm_sync_owned_users | length
+      - realm_acl_cleanup_verify.results | map(attribute='binding') | reject('equalto', none) | list | length == 0
+      - realm_group_cleanup_verify.results | selectattr('groups', 'defined') | list | length == realm_sync_owned_groups | length
+      - realm_group_cleanup_verify.results | map(attribute='groups') | flatten | length == 0
+      - realm_user_cleanup_verify.results | selectattr('users', 'defined') | list | length == realm_sync_owned_users | length
+      - realm_user_cleanup_verify.results | map(attribute='users') | flatten | length == 0

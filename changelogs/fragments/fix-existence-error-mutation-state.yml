@@ -1,0 +1,2 @@
+bugfixes:
+  - Shared resource existence validation now preserves completed mutations in later failure results.

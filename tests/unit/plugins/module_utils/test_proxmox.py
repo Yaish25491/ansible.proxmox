@@ -869,8 +869,10 @@ class FakeClient:
     def __init__(self, api):
         self.api = api
 
-    def fail_request(self, operation, exception, parameters=None):
-        raise AssertionError("Unexpected API failure")
+    def fail_request(self, operation, exception=None, parameters=None, **details):
+        if exception is not None:
+            raise AssertionError("Unexpected API failure")
+        raise FailJson(dict(msg=operation, **details))
 
 
 class DummyTaskModule(ProxmoxTask):

@@ -1,0 +1,449 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise the LXC snapshot lifecycle
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Generate an LXC root password
+      ansible.builtin.set_fact:
+        lxc_snapshot_root_password: "{{ lookup('password', '/dev/null length=32') }}"
+      no_log: true
+
+    - name: Check that the LXC snapshot fixture VMID is unused
+      ansible.proxmox.proxmox_lxc_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_lxc_preflight
+
+    - name: Check that the fixture VMID is unused by QEMU
+      ansible.proxmox.proxmox_vm_info: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_qemu_preflight
+
+    - name: Refuse to overwrite an existing guest
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_lxc_preflight.lxcs | length == 0
+          - lxc_snapshot_qemu_preflight.vms | length == 0
+        fail_msg: The randomized LXC snapshot fixture VMID is already in use.
+
+    - name: Claim ownership of the LXC snapshot fixture
+      ansible.builtin.set_fact:
+        lxc_snapshot_cleanup_allowed: true
+
+    - name: Create a stopped LXC snapshot fixture
+      ansible.proxmox.proxmox_lxc: # noqa: args[module]
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        hostname: "ansible-lxc-snapshot-{{ lxc_snapshot_vmid }}"
+        ostemplate: "{{ lxc_snapshot_template }}"
+        password: "{{ lxc_snapshot_root_password }}"
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 1
+        memory: 512
+        ostype: fedora
+        power_cycle: 'off'
+        state: present
+      register: lxc_snapshot_container_create
+
+    - name: Verify the LXC snapshot fixture was created
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_container_info
+
+    - name: Assert the fixture action and observed container
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_container_create is changed
+          - lxc_snapshot_container_info.lxcs | length == 1
+          - lxc_snapshot_container_info.lxcs[0].hostname == 'ansible-lxc-snapshot-' ~ lxc_snapshot_vmid
+
+    - name: Predict snapshot creation in check mode
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+      check_mode: true
+      register: lxc_snapshot_create_check
+
+    - name: Read snapshots after check-mode creation
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_check
+
+    - name: Assert check-mode creation result and observed state
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_create_check is changed
+          - lxc_snapshot_create_check.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_create_check.task_upid is not defined
+          - lxc_snapshot_after_check is not changed
+          - lxc_snapshot_name not in (lxc_snapshot_after_check.snapshots | map(attribute='name') | list)
+
+    - name: Create the LXC snapshot
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+      register: lxc_snapshot_create
+
+    - name: Read snapshots after creation
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_list
+
+    - name: Read the created LXC snapshot configuration
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+      register: lxc_snapshot_configuration
+
+    - name: Read a missing LXC snapshot configuration
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}-missing"
+      register: lxc_snapshot_missing_configuration
+
+    - name: Assert creation result and observed snapshots
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_create is changed
+          - lxc_snapshot_create.task_upid is defined
+          - lxc_snapshot_create.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_list is not changed
+          - "'current' in (lxc_snapshot_list.snapshots | map(attribute='name') | list)"
+          - lxc_snapshot_name in (lxc_snapshot_list.snapshots | map(attribute='name') | list)
+          - lxc_snapshot_configuration.snapshots | length == 1
+          - lxc_snapshot_configuration.snapshots[0].name == lxc_snapshot_name
+          - lxc_snapshot_missing_configuration.snapshots | length == 0
+          - >-
+            lxc_snapshot_configuration.snapshots[0].description | trim
+            == 'Snapshot created by Ansible integration tests.'
+          - >-
+            lxc_snapshot_list.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot created by Ansible integration tests.'
+
+    - name: Reapply the same snapshot
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot created by Ansible integration tests.
+      register: lxc_snapshot_create_again
+
+    - name: Read snapshots after repeated creation
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_create_again
+
+    - name: Assert repeated creation result and observed state
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_create_again is not changed
+          - lxc_snapshot_create_again.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_after_create_again is not changed
+          - lxc_snapshot_name in (lxc_snapshot_after_create_again.snapshots | map(attribute='name') | list)
+          - >-
+            lxc_snapshot_after_create_again.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot created by Ansible integration tests.'
+
+    - name: Predict snapshot description update in check mode
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+      check_mode: true
+      register: lxc_snapshot_update_check
+
+    - name: Read snapshots after check-mode description update
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_update_check
+
+    - name: Assert check-mode update result and unchanged observed description
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_update_check is changed
+          - lxc_snapshot_update_check.snapshot.description == 'Snapshot description updated by Ansible integration tests.'
+          - lxc_snapshot_after_update_check is not changed
+          - >-
+            lxc_snapshot_after_update_check.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot created by Ansible integration tests.'
+
+    - name: Update the snapshot description
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+      register: lxc_snapshot_update
+
+    - name: Read snapshots after description update
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_update
+
+    - name: Assert update result and observed description
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_update is changed
+          - lxc_snapshot_update.snapshot.description == 'Snapshot description updated by Ansible integration tests.'
+          - lxc_snapshot_after_update is not changed
+          - >-
+            lxc_snapshot_after_update.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Reapply the updated snapshot description
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        description: Snapshot description updated by Ansible integration tests.
+      register: lxc_snapshot_update_again
+
+    - name: Read snapshots after repeated description update
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_update_again
+
+    - name: Assert repeated update result and observed description
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_update_again is not changed
+          - lxc_snapshot_update_again.snapshot.description == 'Snapshot description updated by Ansible integration tests.'
+          - lxc_snapshot_after_update_again is not changed
+          - >-
+            lxc_snapshot_after_update_again.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Predict snapshot rollback in check mode
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: rollback
+      check_mode: true
+      register: lxc_snapshot_rollback_check
+
+    - name: Read snapshots after check-mode rollback
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_rollback_check
+
+    - name: Assert check-mode rollback result and observed snapshot
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_rollback_check is changed
+          - lxc_snapshot_rollback_check.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_rollback_check.task_upid is not defined
+          - lxc_snapshot_after_rollback_check is not changed
+          - lxc_snapshot_name in (lxc_snapshot_after_rollback_check.snapshots | map(attribute='name') | list)
+          - >-
+            lxc_snapshot_after_rollback_check.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Start the LXC container before rollback
+      ansible.proxmox.proxmox_lxc_powerstate:
+        vmid: "{{ lxc_snapshot_vmid }}"
+        powerstate: start
+      register: lxc_snapshot_start_before_rollback
+
+    - name: Verify the LXC container is running before rollback
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_running_before_rollback
+
+    - name: Assert the LXC container started before rollback
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_start_before_rollback.powerstate == 'running'
+          - lxc_snapshot_running_before_rollback.powerstate == 'running'
+
+    - name: Roll back the running LXC container
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: rollback
+      register: lxc_snapshot_rollback
+
+    - name: Read the LXC power state after rollback
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_powerstate_after_rollback
+
+    - name: Assert rollback leaves the running container stopped
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_powerstate_after_rollback.powerstate == 'stopped'
+
+    - name: Read snapshots after rollback
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_rollback
+
+    - name: Assert rollback result and observed snapshot
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_rollback is changed
+          - lxc_snapshot_rollback.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_rollback.task_upid is defined
+          - lxc_snapshot_after_rollback is not changed
+          - lxc_snapshot_name in (lxc_snapshot_after_rollback.snapshots | map(attribute='name') | list)
+          - >-
+            lxc_snapshot_after_rollback.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Roll back to the same snapshot again
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: rollback
+        start: true
+      register: lxc_snapshot_rollback_again
+
+    - name: Verify the LXC container started after rollback
+      ansible.proxmox.proxmox_lxc_powerstate_info:
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_powerstate_after_rollback_again
+
+    - name: Read snapshots after repeated rollback
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_rollback_again
+
+    - name: Assert repeated rollback remains non-idempotent
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_rollback_again is changed
+          - lxc_snapshot_rollback_again.snapshot.name == lxc_snapshot_name
+          - lxc_snapshot_rollback_again.task_upid is defined
+          - lxc_snapshot_powerstate_after_rollback_again.powerstate == 'running'
+          - lxc_snapshot_after_rollback_again is not changed
+          - lxc_snapshot_name in (lxc_snapshot_after_rollback_again.snapshots | map(attribute='name') | list)
+          - >-
+            lxc_snapshot_after_rollback_again.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Predict snapshot deletion in check mode
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: absent
+      check_mode: true
+      register: lxc_snapshot_delete_check
+
+    - name: Read snapshots after check-mode deletion
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_delete_check
+
+    - name: Assert check-mode deletion result and unchanged observed snapshot
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_delete_check is changed
+          - lxc_snapshot_delete_check.snapshot is none
+          - lxc_snapshot_delete_check.task_upid is not defined
+          - lxc_snapshot_after_delete_check is not changed
+          - lxc_snapshot_name in (lxc_snapshot_after_delete_check.snapshots | map(attribute='name') | list)
+          - >-
+            lxc_snapshot_after_delete_check.snapshots
+            | selectattr('name', 'equalto', lxc_snapshot_name)
+            | map(attribute='description')
+            | first | trim == 'Snapshot description updated by Ansible integration tests.'
+
+    - name: Delete the LXC snapshot
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: absent
+      register: lxc_snapshot_delete
+
+    - name: Read snapshots after deletion
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_delete
+
+    - name: Assert deletion result and observed state
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_delete is changed
+          - lxc_snapshot_delete.snapshot is none
+          - lxc_snapshot_delete.task_upid is defined
+          - lxc_snapshot_after_delete is not changed
+          - lxc_snapshot_name not in (lxc_snapshot_after_delete.snapshots | map(attribute='name') | list)
+
+    - name: Delete the same snapshot again
+      ansible.proxmox.proxmox_lxc_snapshot:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+        snapname: "{{ lxc_snapshot_name }}"
+        state: absent
+      register: lxc_snapshot_delete_again
+
+    - name: Read snapshots after repeated deletion
+      ansible.proxmox.proxmox_lxc_snapshot_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_snapshot_vmid }}"
+      register: lxc_snapshot_after_delete_again
+
+    - name: Assert repeated deletion result and observed state
+      ansible.builtin.assert:
+        that:
+          - lxc_snapshot_delete_again is not changed
+          - lxc_snapshot_delete_again.snapshot is none
+          - lxc_snapshot_after_delete_again is not changed
+          - lxc_snapshot_name not in (lxc_snapshot_after_delete_again.snapshots | map(attribute='name') | list)
+
+  always:
+    - name: Remove the owned LXC snapshot fixture
+      ansible.builtin.include_tasks: cleanup.yml
+      when: lxc_snapshot_cleanup_allowed | default(false)

@@ -1,0 +1,5 @@
+---
+proxmox_node: pve01
+lxc_snapshot_vmid: "{{ integration_resource_ids[1] | int }}"
+lxc_snapshot_name: "snapshot_ansible-{{ lxc_snapshot_vmid }}"
+lxc_snapshot_template: "{{ proxmox_lxc_template | default('fedora-44-default_20260713_amd64.tar.xz') }}"

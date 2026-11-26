@@ -1,0 +1,143 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise LXC clone action
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_port: "{{ proxmox_api_port | default(8006) }}"
+      api_user: "{{ proxmox_api_user | default(omit, true) }}"
+      api_password: "{{ proxmox_api_password | default(omit, true) }}"
+      api_token_id: "{{ proxmox_api_token_id | default(omit, true) }}"
+      api_token_secret: "{{ proxmox_api_token_secret | default(omit, true) }}"
+      ca_path: "{{ proxmox_ca_path | default(omit, true) }}"
+      validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+  block:
+    - name: Generate a temporary LXC root password
+      ansible.builtin.set_fact:
+        lxc_clone_root_password: "{{ lookup('password', '/dev/null length=32') }}"
+      no_log: true
+
+    - name: Check the source LXC VMID is unused
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_source_vmid }}"
+      register: lxc_clone_source_before
+
+    - name: Check the destination LXC VMID is unused
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_new_vmid }}"
+      register: lxc_clone_destination_before
+
+    - name: Check the source VMID is unused by QEMU
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_source_vmid }}"
+      register: lxc_clone_source_qemu_before
+
+    - name: Check the destination VMID is unused by QEMU
+      ansible.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_new_vmid }}"
+      register: lxc_clone_destination_qemu_before
+
+    - name: Refuse to overwrite an existing guest
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_source_before.lxcs | length == 0
+          - lxc_clone_destination_before.lxcs | length == 0
+          - lxc_clone_source_qemu_before.vms | length == 0
+          - lxc_clone_destination_qemu_before.vms | length == 0
+        fail_msg: A random LXC clone fixture VMID is already in use; rerun the target.
+
+    - name: Claim clone fixture VMIDs after preflight
+      ansible.builtin.set_fact:
+        lxc_clone_cleanup_allowed: true
+
+    - name: Create the stopped source LXC container  # noqa: args[module]
+      ansible.proxmox.proxmox_lxc:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_source_vmid }}"
+        hostname: "ansible-lxc-clone-source-{{ lxc_clone_source_vmid }}"
+        ostemplate: "{{ lxc_clone_template }}"
+        password: "{{ lxc_clone_root_password }}"
+        unprivileged: true
+        rootfs: local-lvm:8
+        cores: 1
+        memory: 512
+        ostype: fedora
+        power_cycle: 'off'
+        state: present
+      register: lxc_clone_source_create
+
+    - name: Assert the LXC source was created
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_source_create is changed
+          - lxc_clone_source_create.task_upid is defined
+
+    - name: Predict cloning a regular LXC container
+      ansible.proxmox.proxmox_lxc_clone: &lxc_clone_args
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_source_vmid }}"
+        newid: "{{ lxc_clone_new_vmid }}"
+        hostname: "ansible-lxc-clone-{{ lxc_clone_new_vmid }}"
+        full: true
+      check_mode: true
+      register: lxc_clone_check
+
+    - name: Assert check mode predicts the clone
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_check is changed
+          - lxc_clone_check.clone.vmid | int == lxc_clone_new_vmid | int
+
+    - name: Verify check mode did not create the clone
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_new_vmid }}"
+      register: lxc_clone_after_check
+
+    - name: Assert the clone remains absent after check mode
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_after_check.lxcs | length == 0
+
+    - name: Clone the regular LXC container
+      ansible.proxmox.proxmox_lxc_clone: *lxc_clone_args
+      register: lxc_clone_result
+
+    - name: Retrieve the cloned LXC container
+      ansible.proxmox.proxmox_lxc_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ lxc_clone_new_vmid }}"
+      register: lxc_clone_info
+
+    - name: Assert regular-container clone and task UPID
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_result is changed
+          - lxc_clone_result.clone.vmid | int == lxc_clone_new_vmid | int
+          - lxc_clone_result.task_upid is search('^UPID:')
+          - lxc_clone_info.lxcs | length == 1
+          - lxc_clone_info.lxcs[0].hostname == 'ansible-lxc-clone-' ~ lxc_clone_new_vmid
+
+    - name: Reject a repeated clone request to the occupied VMID
+      ansible.proxmox.proxmox_lxc_clone: *lxc_clone_args
+      check_mode: true
+      register: lxc_clone_existing_vmid
+      ignore_errors: true
+
+    - name: Assert an occupied destination VMID is rejected
+      ansible.builtin.assert:
+        that:
+          - lxc_clone_existing_vmid is failed
+          - not lxc_clone_existing_vmid.changed
+          - "'already in use' in lxc_clone_existing_vmid.msg"
+
+  always:
+    - name: Remove owned LXC clone fixtures
+      ansible.builtin.include_tasks: cleanup.yml
+      when: lxc_clone_cleanup_allowed | default(false)

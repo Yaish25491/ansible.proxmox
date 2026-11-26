@@ -42,6 +42,7 @@ def snapshot_environment():
             "vmid": 100,
             "snapname": None if handler_class is ProxmoxVmSnapshotInfoModule else "before_upgrade",
             "state": "present",
+            "start": False,
             "description": None,
             "vmstate": False,
             "task_timeout": None,
@@ -214,7 +215,8 @@ def test_snapshot_absent_is_idempotent_and_check_mode_safe(snapshot_environment,
 
 
 @pytest.mark.parametrize("check_mode", [False, True])
-def test_snapshot_rollback_is_explicit_and_check_mode_safe(snapshot_environment, monkeypatch, check_mode):
+@pytest.mark.parametrize("start", [False, True])
+def test_snapshot_rollback_is_explicit_and_check_mode_safe(snapshot_environment, monkeypatch, check_mode, start):
     """Always roll back existing snapshots, without mutating anything in check mode.
 
     Args:
@@ -224,7 +226,7 @@ def test_snapshot_rollback_is_explicit_and_check_mode_safe(snapshot_environment,
     """
     snapshot = {"name": "before_upgrade", "description": "Original"}
     handler, endpoint = snapshot_environment(
-        state="rollback", check_mode=check_mode,
+        state="rollback", check_mode=check_mode, start=start,
         snapshots=[snapshot, {"name": "current", "parent": "before_upgrade"}],
         description="This must not update the snapshot",
     )
@@ -244,7 +246,7 @@ def test_snapshot_rollback_is_explicit_and_check_mode_safe(snapshot_environment,
         assert handler.client._changed is False
     else:
         assert endpoint.return_value.rollback.post.call_count == 2
-        endpoint.return_value.rollback.post.assert_called_with()
+        endpoint.return_value.rollback.post.assert_called_with(start=int(start))
         assert wait.call_count == 2
         wait.assert_called_with("UPID:pve01:snapshot-rollback")
         assert handler.client._changed is True
@@ -727,6 +729,7 @@ def test_snapshot_main_registers_required_arguments(monkeypatch, module_source, 
     assert arguments["mutually_exclusive"] == [["api_password", "api_token_id"]]
     if module_source is proxmox_vm_snapshot:
         assert spec["snapname"] == {"type": "str", "required": True}
+        assert spec["start"] == {"type": "bool", "default": False}
         assert spec["vmstate"] == {"type": "bool", "default": False}
         assert spec["description"] == {"type": "str"}
         assert spec["task_timeout"] == {"type": "int"}

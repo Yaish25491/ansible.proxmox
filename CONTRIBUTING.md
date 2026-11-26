@@ -107,27 +107,65 @@ by unit tests and check-mode predictions. Target defaults apply equally to local
 and CI runs; the shared configuration generator and workflow need no host-specific
 configuration.
 
+## Shared LXC integration test prerequisites
+
+The `proxmox_lxc_template`, `proxmox_lxc_clone`, `proxmox_lxc_snapshot`, and
+`proxmox_lxc_migrate` integration targets create LXC containers from
+`fedora-44-default_20260713_amd64.tar.xz` by default. The `proxmox_lxc` module
+looks up an unqualified template in `local:vztmpl` on the selected
+`proxmox_node`; it does not download the archive. Stage the default template on
+that node before running these targets, or container creation fails because the
+OS template does not exist in storage.
+
+To use another template, set `proxmox_lxc_template` in
+`tests/integration/integration_config.yml` to its filename or volume ID. The
+override must already be available as `vztmpl` content on the selected node.
+The same override is also used by the `proxmox_lxc` and
+`proxmox_lxc_powerstate` integration targets.
+
+These targets hardcode `rootfs: local-lvm:8`. Each test node must have an
+enabled `local-lvm` storage that supports container root filesystems and enough
+free space for the 8 GiB fixture volume.
+
 ## LXC template integration tests
 
 The `proxmox_lxc_template` target creates, starts, converts, updates, deletes and
 recreates an LXC container on `proxmox_node`, then cleans it up. Use a disposable
 node and generate the private configuration using the
-[integration test instructions](README.md#integration-tests). The target's
-`rootfs` is hardcoded as `local-lvm:8`, so the node must have an enabled
-`local-lvm` storage that supports container root filesystems.
-
-The default source archive is `fedora-44-default_20260713_amd64.tar.xz`. It must
-already be available as `local:vztmpl/fedora-44-default_20260713_amd64.tar.xz`;
-the `proxmox_lxc` module looks up template archives in Proxmox storage and does
-not download them. To use another archive, set `proxmox_lxc_template` in
-`tests/integration/integration_config.yml` to its filename or volume ID, and
-stage it as `vztmpl` content on that node. This override is also used by the
-`proxmox_lxc` and `proxmox_lxc_powerstate` integration targets.
-
-Set `proxmox_node` to the test node, then run from the collection root:
+[integration test instructions](README.md#integration-tests). See the shared
+[LXC prerequisites](#shared-lxc-integration-test-prerequisites) before running
+the target. Set `proxmox_node` to the test node, then run from the collection
+root:
 
 ```bash
 ansible-test integration proxmox_lxc_template
+```
+
+## LXC clone integration tests
+
+The `proxmox_lxc_clone` target creates an LXC source container before exercising
+the clone operation. See the shared
+[LXC prerequisites](#shared-lxc-integration-test-prerequisites) before running
+the target. Generate the private integration configuration using the
+[integration test instructions](README.md#integration-tests), set
+`proxmox_node` to the test node, then run from the collection root:
+
+```bash
+ansible-test integration proxmox_lxc_clone
+```
+
+## LXC migration integration tests
+
+The `proxmox_lxc_migrate` target checks migration preconditions, verifies that a
+running container requires `restart` in both normal and check mode,
+then predicts and performs a restart migration between two cluster nodes. Use
+the shared [LXC prerequisites](#shared-lxc-integration-test-prerequisites),
+generate the private integration configuration, and set
+`lxc_migrate_source_node` and `lxc_migrate_target_node` if the defaults do not
+match the test cluster. Run from the collection root:
+
+```bash
+ansible-test integration proxmox_lxc_migrate
 ```
 
 ## Node syslog information integration tests
@@ -207,3 +245,56 @@ Malformed API responses never establish fixture absence or emptiness. Native IP-
 deletion has no metadata digest; its nonempty-member check is atomic on the server.
 Cleanup attempts every definition and both verification paths before reporting any
 failed removal, even when a later read happens to find that definition absent.
+## Role identity integration tests
+
+The `proxmox_role` target tests the lifecycle module together with
+`proxmox_role_info`, using the shared private integration configuration.
+Run `ansible-test integration proxmox_role` from the collection root.
+The target creates uniquely named, ownership-checked identity fixtures and
+removes them in `always`, continuing cleanup after individual errors and
+independently verifying removal. It does not assign ACLs or alter the
+controller's authentication identity. Coverage includes omitted-privilege creation, privilege replacement,
+populated omission, explicit empty sets, list-all and selected information reads
+in check mode, reserved role identifiers, and built-in update/deletion protection
+with independent verification that built-in privileges remain unchanged.
+Run only with explicit authorization to create and remove these test identities.
+
+## Authentication realm integration tests
+
+The `proxmox_realm` target tests configuration lifecycle together with
+`proxmox_realm_info`, then independently verifies synchronized identities with
+`proxmox_user_info` and `proxmox_group_info`. Run
+`ansible-test integration proxmox_realm` using the shared private integration
+configuration, only with authorization to create and remove temporary realms,
+disabled users, groups and nonpropagating NoAccess ACL fixtures. It refuses
+pre-existing realms, imported identities, suffixed groups and related orphaned
+ACLs before claiming ownership.
+
+Configuration scenarios use reserved `.invalid` provider addresses and cover
+LDAP, AD and OpenID creation, reconciliation, omission, explicit removal,
+idempotency, digest updates, check mode and deletion. Synchronization scenarios
+start an owned, read-only LDAP fixture on an ephemeral controller port. The
+Proxmox node must be able to reach that address and port. The target discovers
+the controller's address from its route to `proxmox_api_host`; override
+`realm_test_ldap_advertise_host` for runners behind NAT or with multiple network
+interfaces. The target does not change firewall rules or network configuration.
+
+Both LDAP and AD scenarios exercise bind connectivity, native dry runs,
+users/groups/both scopes, disabled-user imports, repeated synchronization,
+property removal, ACL cleanup, vanished-entry removal and stored bind-password
+removal. The fixture contains only synthetic records and a dummy bind password;
+it does not authenticate real users or validate OpenID login flows. Built-in
+realm configuration and reset are predicted only in check mode. No test changes
+the controller's realm or the cluster login default.
+
+Cleanup attempts every owned binding, group and user before deleting the owned
+realms, continues after individual errors and independently verifies removal.
+An outer `always` also stops the owned LDAP service and verifies removal of its
+allocated directory. A failed verification remains a test failure.
+
+Provider tests verify LDAP/AD transport, fallback servers, boolean defaults,
+and OpenID claim/group/userinfo settings with independent reads. Bind passwords
+and client keys are dummy values for disconnected owned fixtures, and secret
+fields are excluded from results. Additional OpenID audience tests require
+`libpve-access-control >= 9.1.1`; enable them explicitly with
+`realm_test_audiences_supported: true` only on a compatible server.

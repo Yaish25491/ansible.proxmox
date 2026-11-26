@@ -1,0 +1,200 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Predict realm creation
+  ansible.proxmox.proxmox_realm: '{{ realm_fixture }}'
+  check_mode: true
+  register: realm_prediction
+- name: Independently verify prediction did not create a realm
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_before
+- name: Verify creation prediction and absent actual state
+  ansible.builtin.assert:
+    that:
+      - realm_prediction is changed
+      - realm_prediction.realm.type == realm_fixture.type
+      - realm_before.realms == []
+- name: Create provider configuration without contacting an identity provider
+  ansible.proxmox.proxmox_realm: '{{ realm_fixture }}'
+  register: realm_created
+- name: Repeat identical configuration
+  ansible.proxmox.proxmox_realm: '{{ realm_fixture }}'
+  register: realm_repeated
+- name: Predict an identical configuration as a no-op
+  ansible.proxmox.proxmox_realm: '{{ realm_fixture }}'
+  check_mode: true
+  register: realm_repeated_check
+- name: Independently read created configuration in check mode
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  check_mode: true
+  register: realm_created_info
+- name: Verify creation and no-op behavior
+  ansible.builtin.assert:
+    that:
+      - realm_created is changed
+      - realm_repeated is not changed
+      - realm_repeated_check is not changed
+      - realm_created_info is not changed
+      - realm_created_info.realms | length == 1
+      - realm_created_info.realms[0].type == realm_fixture.type
+      - not realm_created_info.realms[0].default
+- name: Independently verify LDAP or AD synchronization default values
+  ansible.builtin.assert:
+    that:
+      - realm_created_info.realms[0]['sync-defaults-options'].split(',') | sort == ['enable-new=0', 'scope=users']
+  when: realm_fixture.type != 'openid'
+- name: Verify every nonsecret creation value through the independent information module
+  ansible.builtin.assert:
+    that:
+      - realm_created_info.realms[0][item.key | replace('_', '-') if item.key in ['issuer_url', 'client_id'] else item.key] == item.value
+  loop: '{{ realm_fixture | dict2items | rejectattr("key", "in", ["password", "sync_defaults_options"]) | list }}'
+  loop_control:
+    label: '{{ item.key }}'
+  no_log: true
+- name: Predict comment reconciliation
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: Owned realm integration fixture
+  check_mode: true
+  register: realm_update_prediction
+- name: Independently verify prediction preserved actual configuration
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_before_update
+- name: Verify predicted update and unchanged actual state
+  ansible.builtin.assert:
+    that:
+      - realm_update_prediction is changed
+      - realm_before_update.realms == realm_created_info.realms
+- name: Update the realm using its read digest
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: Owned realm integration fixture
+    digest: '{{ realm_before_update.realms[0].digest }}'
+  register: realm_updated
+- name: Verify omitted options preserve populated configuration
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_omitted
+- name: Independently verify the updated value
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_updated_info
+- name: Verify actual reconciliation and omission no-op
+  ansible.builtin.assert:
+    that:
+      - realm_updated is changed
+      - realm_omitted is not changed
+      - realm_updated_info.realms[0].comment == 'Owned realm integration fixture'
+- name: Reject a stale configuration digest on an owned realm
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: must not be written
+    digest: '{{ ''0'' * 40 }}'
+  register: realm_stale
+  ignore_errors: true
+- name: Reject changing an owned realm provider type
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    type: '{{ ''openid'' if realm_fixture.type != ''openid'' else ''ldap'' }}'
+  check_mode: true
+  register: realm_wrong_type
+  ignore_errors: true
+- name: Independently verify rejected updates preserved configuration
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_after_rejection
+- name: Verify digest and immutable-type failures do not write
+  ansible.builtin.assert:
+    that:
+      - realm_stale is failed
+      - realm_stale is not changed
+      - realm_wrong_type is failed
+      - realm_wrong_type is not changed
+      - realm_after_rejection.realms == realm_updated_info.realms
+- name: Remove the optional comment explicitly
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    remove_properties:
+      - comment
+  register: realm_property_removed
+- name: Repeat explicit removal
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    remove_properties:
+      - comment
+  register: realm_removal_repeated
+- name: Independently verify optional property removal
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_removed_info
+- name: Verify removal and repeated no-op
+  ansible.builtin.assert:
+    that:
+      - realm_property_removed is changed
+      - realm_removal_repeated is not changed
+      - realm_removed_info.realms[0].comment is not defined
+- name: Recreate an optional comment for empty-value reconciliation
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: Temporary comment
+- name: Clear the comment with an explicit empty value
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: ''
+  register: realm_empty_comment
+- name: Repeat the explicit empty value
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    comment: ''
+  register: realm_empty_repeated
+- name: Independently verify empty comment storage
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_empty_info
+- name: Verify explicit empty is different from omission and becomes a no-op
+  ansible.builtin.assert:
+    that:
+      - realm_empty_comment is changed
+      - realm_empty_repeated is not changed
+      - realm_empty_info.realms[0].comment is not defined
+- name: Exercise concrete provider configuration and default resets
+  ansible.builtin.include_tasks: provider.yml
+- name: Predict realm deletion
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    state: absent
+  check_mode: true
+  register: realm_delete_prediction
+- name: Independently verify predicted deletion preserved the realm
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_after_delete_prediction
+- name: Verify actual presence after deletion prediction
+  ansible.builtin.assert:
+    that:
+      - realm_delete_prediction is changed
+      - realm_after_delete_prediction.realms == realm_empty_info.realms
+- name: Delete the owned realm
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    state: absent
+  register: realm_deleted
+- name: Repeat deletion as a no-op
+  ansible.proxmox.proxmox_realm:
+    realm: '{{ realm_fixture.realm }}'
+    state: absent
+  register: realm_deleted_repeated
+- name: Independently verify removal
+  ansible.proxmox.proxmox_realm_info:
+    realm: '{{ realm_fixture.realm }}'
+  register: realm_deleted_info
+- name: Verify deletion and absent no-op
+  ansible.builtin.assert:
+    that:
+      - realm_deleted is changed
+      - realm_deleted_repeated is not changed
+      - realm_deleted_info.realms == []

@@ -66,7 +66,7 @@ class ProxmoxBase(ABC):
             exists = resource is not None
 
         if not exists and fail_on_missing:
-            self.module.fail_json(msg="{0} {1} does not exist".format(resource_type.capitalize(), resource_name))
+            self.client.fail_request("{0} {1} does not exist".format(resource_type.capitalize(), resource_name))
         return exists
 
     def call_api(self, operation, function, *args, **kwargs):
@@ -100,6 +100,26 @@ class ProxmoxBase(ABC):
         result = self.call_api(operation, function, *args, **kwargs)
         self.client.mark_changed()
         return result
+
+    @staticmethod
+    def _parse_formatted_options(value):
+        """Parse a Proxmox property string without interpreting field values.
+
+        Args:
+            value: Comma-separated API string, such as 'virtio,bridge=vmbr0'.
+
+        Returns:
+            String fields by key; unkeyed fields map to an empty string.
+            Empty or non-string input produces an empty mapping.
+        """
+        if not isinstance(value, str) or not value:
+            return {}
+        options = {}
+        for item in value.split(","):
+            key, separator, field_value = item.partition("=")
+            if key.strip():
+                options[key.strip()] = field_value.strip() if separator else ""
+        return options
 
     def prepare_result(self, changed, resource=None, **values):
         """Assemble result data using this handler's resource key.
