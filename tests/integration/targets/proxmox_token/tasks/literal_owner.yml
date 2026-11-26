@@ -1,0 +1,155 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the sibling sentinel before changing a literal owner
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_sibling_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_sibling_before
+- name: Predict creation for the literal owner
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    comment: Literal owner token
+  check_mode: true
+  register: token_literal_prediction
+- name: Verify the prediction did not create the literal token
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_literal_absent
+- name: Require literal-owner creation prediction without a secret
+  ansible.builtin.assert:
+    that:
+      - token_literal_prediction is changed
+      - token_literal_prediction.token.userid == token_literal_owner
+      - token_literal_prediction.token_secret is not defined
+      - token_literal_absent.tokens == []
+- name: Create only the literal owner's token and hide its one-time secret
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    comment: Literal owner token
+  register: token_literal_created
+  no_log: true
+- name: Require verified creation with a one-time secret
+  ansible.builtin.assert:
+    that:
+      - token_literal_created is changed
+      - token_literal_created.token_secret | length > 0
+  no_log: true
+- name: Independently read the selected literal token
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_literal_selected
+- name: Independently list tokens for the literal owner in check mode
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+  check_mode: true
+  register: token_literal_listed
+- name: Independently verify sibling metadata after literal creation
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_sibling_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_sibling_after_creation
+- name: Require exact literal identity and sibling isolation
+  ansible.builtin.assert:
+    that:
+      - token_literal_selected.tokens | length == 1
+      - token_literal_selected.tokens[0].userid == token_literal_owner
+      - token_literal_selected.tokens[0].comment == 'Literal owner token'
+      - token_literal_listed.tokens == token_literal_selected.tokens
+      - token_literal_selected.tokens[0].token_secret is not defined
+      - token_literal_selected.tokens[0].value is not defined
+      - token_sibling_after_creation.tokens == token_sibling_before.tokens
+- name: Predict literal-owner token metadata update
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    comment: Updated literal owner token
+  check_mode: true
+  register: token_literal_update_prediction
+- name: Verify update prediction preserved actual metadata
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_literal_before_update
+- name: Require an unchanged token after prediction
+  ansible.builtin.assert:
+    that:
+      - token_literal_update_prediction is changed
+      - token_literal_update_prediction.token.comment == 'Updated literal owner token'
+      - token_literal_update_prediction.token_secret is not defined
+      - token_literal_before_update.tokens == token_literal_selected.tokens
+- name: Update only the literal owner's token
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    comment: Updated literal owner token
+  register: token_literal_updated
+- name: Read the actual updated literal token in check mode
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+  check_mode: true
+  register: token_literal_actual
+- name: Repeat the literal-owner token update
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    comment: Updated literal owner token
+  register: token_literal_repeat
+- name: Require verified idempotent literal-owner updates without secrets
+  ansible.builtin.assert:
+    that:
+      - token_literal_updated is changed
+      - token_literal_actual.tokens[0].comment == 'Updated literal owner token'
+      - token_literal_updated.token_secret is not defined
+      - token_literal_repeat is not changed
+      - token_literal_repeat.token_secret is not defined
+- name: Predict deletion for the literal owner's token
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  check_mode: true
+  register: token_literal_delete_prediction
+- name: Verify deletion prediction retained the literal token
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+  register: token_literal_retained
+- name: Require a deletion prediction without writes
+  ansible.builtin.assert:
+    that:
+      - token_literal_delete_prediction is changed
+      - token_literal_retained.tokens == token_literal_actual.tokens
+- name: Delete only the literal owner's token
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_literal_deleted
+- name: Independently verify literal token removal
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_literal_owner }}'
+  register: token_literal_removed
+- name: Independently verify sibling token preservation
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_sibling_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_sibling_after
+- name: Repeat literal token deletion
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_literal_owner }}'
+    tokenid: '{{ token_test_id }}'
+    state: absent
+  register: token_literal_delete_repeat
+- name: Require literal token removal without affecting the sibling
+  ansible.builtin.assert:
+    that:
+      - token_literal_deleted is changed
+      - token_literal_removed.tokens == []
+      - token_literal_delete_repeat is not changed
+      - token_sibling_after.tokens == token_sibling_before.tokens

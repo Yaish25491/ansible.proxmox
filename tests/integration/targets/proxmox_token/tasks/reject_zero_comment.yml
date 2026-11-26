@@ -1,0 +1,31 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the populated comment before rejecting literal zero
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_zero_before
+- name: Reject literal zero without clearing the existing comment
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    comment: '0'
+  check_mode: '{{ token_zero_check_mode }}'
+  register: token_zero_rejected
+  ignore_errors: true
+- name: Independently read the token after literal zero rejection
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_zero_after
+- name: Require a preflight failure and unchanged token metadata
+  ansible.builtin.assert:
+    that:
+      - token_zero_rejected is failed
+      - token_zero_rejected is not changed
+      - "'cannot persist comment=0' in token_zero_rejected.msg"
+      - token_zero_rejected.token_secret is not defined
+      - token_zero_before.tokens[0].comment | length > 0
+      - token_zero_after.tokens == token_zero_before.tokens
