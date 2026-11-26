@@ -231,6 +231,25 @@ in check mode, reserved role identifiers, and built-in update/deletion protectio
 with independent verification that built-in privileges remain unchanged.
 Run only with explicit authorization to create and remove these test identities.
 
+## Token identity integration tests
+
+The `proxmox_token` target tests the lifecycle module together with
+`proxmox_token_info`, using the shared private integration configuration.
+Run `ansible-test integration proxmox_token` from the collection root.
+The target creates uniquely named, ownership-checked identity fixtures and
+removes them in `always`, continuing cleanup after individual errors and
+independently verifying removal. It does not assign ACLs or alter the
+controller's authentication identity. Fixture users, where needed, are disabled
+PVE-realm accounts without passwords. Token secrets are hidden from output.
+Coverage includes literal percent escapes, number signs and question marks in
+owner identifiers, preservation of a separate decoded-looking sibling account,
+and empty-string comment updates. Literal `0` is rejected before writes in
+normal and check mode because Proxmox configuration persistence drops it and
+would clear an existing comment. Older servers that ignore empty-string updates
+must fail readback verification and preserve the original metadata; the target
+reports that outcome separately from successful clearing and repeated no-op
+coverage on supported servers.
+Run only with explicit authorization to create and remove these test identities.
 ## Authentication realm integration tests
 
 The `proxmox_realm` target tests configuration lifecycle together with

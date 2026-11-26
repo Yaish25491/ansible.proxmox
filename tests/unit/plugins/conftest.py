@@ -237,8 +237,11 @@ class IdentityApi:
         if parts[1] == "groups":
             self.groups[parts[2]].update(parameters)
         elif len(parts) > 3:
-            self.tokens[parts[2], parts[4]].update({key: value for key, value in parameters.items()
-                                                   if key != "comment" or value not in ("", "0", None)})
+            token = self.tokens[parts[2], parts[4]]
+            token.update({key: value for key, value in parameters.items() if value is not None})
+            # API2 accepts defined comments, but the user.cfg writer drops Perl-false values.
+            if token.get("comment") in ("", "0"):
+                token.pop("comment")
         else:
             data = dict(parameters)
             if "groups" in data:

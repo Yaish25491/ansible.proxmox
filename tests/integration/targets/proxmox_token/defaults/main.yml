@@ -1,0 +1,13 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+token_test_user: ansible-token-{{ integration_resource_ids | join('') }}@pve
+token_test_id: ansible-token-{{ integration_resource_ids | join('') }}
+token_test_special_users:
+  - ansible-token-{{ integration_resource_ids | join('') }}%41@pve
+  - ansible-token-{{ integration_resource_ids | join('') }}#tag@pve
+  - ansible-token-{{ integration_resource_ids | join('') }}?tag@pve
+  - ansible-token-{{ integration_resource_ids | join('') }}%2Ftag@pve
+token_test_sibling_user: ansible-token-{{ integration_resource_ids | join('') }}A@pve
+token_test_owned_users: '{{ [token_test_user, token_test_sibling_user] + token_test_special_users }}'

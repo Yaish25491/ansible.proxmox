@@ -1,0 +1,69 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the comment before predicting its update
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_comment_before
+- name: Predict the requested comment without rotating the secret
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    comment: '{{ token_desired_comment }}'
+  check_mode: true
+  register: token_comment_prediction
+- name: Independently read the token after its predicted comment update
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_comment_after_prediction
+- name: Require an accurate prediction with no actual changes
+  ansible.builtin.assert:
+    that:
+      - token_comment_prediction is changed
+      - token_comment_prediction.token.comment == token_desired_comment
+      - token_comment_prediction.token_secret is not defined
+      - token_comment_after_prediction.tokens == token_comment_before.tokens
+- name: Apply the comment update and expose older-server readback rejection
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    comment: '{{ token_desired_comment }}'
+  register: token_comment_update
+  ignore_errors: true
+- name: Independently verify the comment after the update request
+  ansible.proxmox.proxmox_token_info:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+  register: token_comment_actual
+- name: Require either verified persistence or an explicit legacy-server failure
+  ansible.builtin.assert:
+    that:
+      - token_comment_update is changed
+      - token_comment_update.token_secret is not defined
+      - token_comment_actual.tokens | length == 1
+      - token_comment_actual.tokens[0].privsep == token_comment_before.tokens[0].privsep
+      - token_comment_actual.tokens[0].expire == token_comment_before.tokens[0].expire
+      - >-
+        (token_comment_update is not failed and token_comment_actual.tokens[0].comment == token_desired_comment)
+        or (token_comment_update is failed and 'server may not support' in token_comment_update.msg
+        and token_comment_actual.tokens == token_comment_before.tokens)
+- name: Report older-server comment update coverage explicitly
+  ansible.builtin.debug:
+    msg: This server ignored the requested token comment; readback verification correctly rejected the update.
+  when: token_comment_update is failed
+- name: Repeat a supported comment update
+  ansible.proxmox.proxmox_token:
+    userid: '{{ token_test_user }}'
+    tokenid: '{{ token_test_id }}'
+    comment: '{{ token_desired_comment }}'
+  register: token_comment_repeat
+  when: token_comment_update is not failed
+- name: Require supported comment updates to be idempotent without secrets
+  ansible.builtin.assert:
+    that:
+      - token_comment_repeat is not changed
+      - token_comment_repeat.token_secret is not defined
+  when: token_comment_update is not failed
