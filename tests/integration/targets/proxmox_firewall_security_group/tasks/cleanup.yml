@@ -1,0 +1,24 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset cleanup failure evidence
+  ansible.builtin.set_fact:
+    firewall_cleanup_errors: []
+- name: Inspect and remove each owned name independently
+  ansible.builtin.include_tasks: cleanup_one.yml
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  loop_control:
+    loop_var: firewall_cleanup_name
+- name: Independently verify every owned identifier after cleanup
+  ansible.proxmox.proxmox_firewall_security_group_info:
+    name: '{{ item }}'
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  register: firewall_cleanup_verified
+  ignore_errors: true
+- name: Expose failed cleanup attempts or remaining definitions
+  ansible.builtin.assert:
+    that:
+      - firewall_cleanup_errors | length == 0
+      - firewall_cleanup_verified is succeeded
+      - firewall_cleanup_verified.results | map(attribute='security_groups') | flatten | length == 0

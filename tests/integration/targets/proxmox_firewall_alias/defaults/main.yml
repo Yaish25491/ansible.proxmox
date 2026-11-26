@@ -3,8 +3,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 ---
 proxmox_node: pve01
-firewall_ref_fixtures:
-  - kind: alias
-    id: ansible-ref-{{ integration_resource_ids | join('') }}-alias
-  - kind: ipset
-    id: ansible-ref-{{ integration_resource_ids | join('') }}-ipset
+firewall_fixture_name: fwa{{ integration_resource_ids | join('') }}
+firewall_fixture_renamed: fra{{ integration_resource_ids | join('') }}

@@ -217,34 +217,22 @@ predictions, removal of a user's last group, deletion of a populated group while
 preserving member accounts, and rejection of reserved group path segments.
 Run only with explicit authorization to create and remove these test identities.
 
-## Firewall reference integration tests
+## Firewall resource integration tests
 
-Run `ansible-test integration proxmox_firewall_refs_info` with the shared private
-integration configuration and authorization to create temporary unused alias and
-IP-set definitions. The target preflights two unique identifiers, creates one
-unreferenced datacenter alias and one empty IP set, and independently verifies
-nonempty reference values and both type filters in normal and check mode.
-Cleanup removes only owned definitions, continues after errors and independently
-verifies both fixture metadata and public references. No firewall is enabled and
-no rule is created or changed.
+Run `ansible-test integration proxmox_firewall_alias proxmox_firewall_ipset
+proxmox_firewall_security_group` with the shared private integration configuration.
+Each target pairs its lifecycle module with its independent info module, claims
+only absent names, creates unused definitions, and verifies cleanup after errors.
+Tests cover creation, reconciliation, omission/empty values, rename, no-ops,
+check mode, stale digests and nonempty deletion guards. Groups remain unattached
+and their test rules are disabled; the targets never enable a firewall.
 
-Supply existing QEMU and LXC guests in `proxmox_firewall_refs_info_test_guests`,
-using records such as `{type: qemu, node: pve01, vmid: 100}`. If omitted, the target
-independently discovers one existing guest of each type on `proxmox_node` (default
-pve01). Both types are required for full scope coverage; missing fixtures fail
-clearly. Guest configuration is never modified. Both guest scopes exercise both
-type filters and unfiltered reads in normal/check mode, verifying native reference
-spelling, datacenter origin and ownership comments. Missing-node and wrong-guest-type
-queries are also checked in both modes; empty guest loops cannot pass vacuously.
+Alias/IP-set targets require existing QEMU and LXC guests. They discover one of
+each on `proxmox_node`, or use `proxmox_firewall_test_guests` entries containing
+`scope`, `node` and `vmid`. Both guest types are required. Only owned unused
+firewall definitions are changed; no guest is created, started or stopped.
+Run only with authorization to create and remove these temporary definitions.
 
-The fixture helper ties each name to its kind and checks the ownership comment.
-Active alias operations also require the original documentation-range host address;
-alias deletion uses the native alias-list digest. IP sets must still be empty in
-normal and check mode, and deletion explicitly disables forced member removal.
-Malformed API responses never establish fixture absence or emptiness. Native IP-set
-deletion has no metadata digest; its nonempty-member check is atomic on the server.
-Cleanup attempts every definition and both verification paths before reporting any
-failed removal, even when a later read happens to find that definition absent.
 ## Role identity integration tests
 
 The `proxmox_role` target tests the lifecycle module together with

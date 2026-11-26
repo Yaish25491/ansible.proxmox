@@ -1,0 +1,265 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset ownership for this scope
+  ansible.builtin.set_fact:
+    firewall_fixture_owned: false
+- name: Preflight source and rename identifiers with the public reader
+  ansible.proxmox.proxmox_firewall_security_group_info:
+    name: '{{ item }}'
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  register: firewall_preflight
+- name: Require both identifiers to be unused
+  ansible.builtin.assert:
+    that:
+      - firewall_preflight.results | map(attribute='security_groups') | flatten | length == 0
+- name: Claim only preflighted absent identifiers
+  ansible.builtin.set_fact:
+    firewall_fixture_owned: true
+- name: Exercise owned security group lifecycle
+  block:
+    - name: Predict creation
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Owned Ansible firewall fixture
+        rules: &id001
+          - type: in
+            action: ACCEPT
+            proto: tcp
+            dport: '443'
+            enable: false
+          - type: out
+            action: DROP
+            enable: false
+      check_mode: true
+      register: firewall_create_check
+    - name: Require a creation prediction
+      ansible.builtin.assert:
+        that:
+          - firewall_create_check is changed
+    - name: Independently verify check-mode non-mutation
+      ansible.proxmox.proxmox_firewall_security_group_info: &id003
+        name: '{{ firewall_fixture_name }}'
+      register: firewall_before_create
+    - name: Require the fixture still absent
+      ansible.builtin.assert:
+        that:
+          - firewall_before_create.security_groups == []
+    - name: Create the owned unused definition
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Owned Ansible firewall fixture
+        rules: *id001
+      register: firewall_created
+    - name: Independently read the created definition
+      ansible.proxmox.proxmox_firewall_security_group_info:
+        name: '{{ firewall_fixture_name }}'
+      register: firewall_initial
+    - name: Verify creation and independent native state
+      ansible.builtin.assert:
+        that:
+          - firewall_created is changed
+          - firewall_initial is not changed
+          - firewall_initial.security_groups | length == 1
+          - firewall_initial.security_groups[0].group == firewall_fixture_name
+          - firewall_initial.security_groups[0].comment == "Owned Ansible firewall fixture"
+    - name: Reapply creation idempotently
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Owned Ansible firewall fixture
+        rules: *id001
+      register: firewall_repeated
+    - name: Require the repeated creation to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_repeated is not changed
+    - name: Verify the populated child collection
+      ansible.builtin.assert:
+        that:
+          - firewall_initial.security_groups[0].rules | length == 2
+    - name: Reject a stale native digest before normal or check-mode writes
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        digest: '0000000000000000000000000000000000000000'
+        comment: Updated Ansible firewall fixture
+        rules: &id002
+          - type: out
+            action: DROP
+            enable: false
+          - type: in
+            action: ACCEPT
+            proto: tcp
+            dport: '8443'
+            enable: false
+      check_mode: '{{ item }}'
+      loop:
+        - false
+        - true
+      register: firewall_stale
+      ignore_errors: true
+    - name: Require both stale requests to fail unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_stale.results | selectattr('failed', 'equalto', true) | list | length == 2
+          - firewall_stale.results | selectattr('changed', 'equalto', true) | list | length == 0
+    - name: Predict an update without changing the live definition
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Updated Ansible firewall fixture
+        rules: *id002
+      check_mode: true
+      register: firewall_update_check
+    - name: Independently read after predicting update
+      ansible.proxmox.proxmox_firewall_security_group_info: *id003
+      register: firewall_after_prediction
+    - name: Require prediction and original live values
+      ansible.builtin.assert:
+        that:
+          - firewall_update_check is changed
+          - firewall_after_prediction.security_groups[0].comment == "Owned Ansible firewall fixture"
+    - name: Apply address members or ordered-rule updates
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Updated Ansible firewall fixture
+        rules: *id002
+      register: firewall_updated
+    - name: Independently read the updated definition
+      ansible.proxmox.proxmox_firewall_security_group_info: *id003
+      register: firewall_updated_info
+    - name: Verify updated description
+      ansible.builtin.assert:
+        that:
+          - firewall_updated is changed
+          - firewall_updated_info.security_groups[0].comment == "Updated Ansible firewall fixture"
+    - name: Reapply the update idempotently
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: Updated Ansible firewall fixture
+        rules: *id002
+      register: firewall_update_again
+    - name: Require repeated update to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_update_again is not changed
+    - name: Verify native ordered rule reconciliation
+      ansible.builtin.assert:
+        that:
+          - firewall_updated_info.security_groups[0].rules | map(attribute='type') | list == ['out', 'in']
+          - firewall_updated_info.security_groups[0].rules[1].dport == "8443"
+    - name: Preserve omitted reconciliation properties
+      ansible.proxmox.proxmox_firewall_security_group: *id003
+      register: firewall_omitted
+    - name: Require omission to preserve state
+      ansible.builtin.assert:
+        that:
+          - firewall_omitted is not changed
+    - name: Clear the description explicitly
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        comment: ''
+      register: firewall_clear_comment
+    - name: Independently read the cleared description
+      ansible.proxmox.proxmox_firewall_security_group_info: *id003
+      register: firewall_cleared_info
+    - name: Verify empty description
+      ansible.builtin.assert:
+        that:
+          - firewall_clear_comment is changed
+          - firewall_cleared_info.security_groups[0].comment | default('') == ''
+    - name: Reject populated deletion before mutation or prediction
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        state: absent
+      check_mode: '{{ item }}'
+      loop:
+        - false
+        - true
+      register: firewall_nonempty
+      ignore_errors: true
+    - name: Require both nonempty deletions to fail unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_nonempty.results | selectattr('failed', 'equalto', true) | list | length == 2
+          - firewall_nonempty.results | selectattr('changed', 'equalto', true) | list | length == 0
+    - name: Rename the existing definition natively
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        rename: '{{ firewall_fixture_renamed }}'
+      register: firewall_renamed
+    - name: Independently read the rename destination
+      ansible.proxmox.proxmox_firewall_security_group_info:
+        name: '{{ firewall_fixture_renamed }}'
+      register: firewall_renamed_info
+    - name: Independently verify the old name is absent
+      ansible.proxmox.proxmox_firewall_security_group_info: *id003
+      register: firewall_old_name
+    - name: Verify native rename
+      ansible.builtin.assert:
+        that:
+          - firewall_renamed is changed
+          - firewall_renamed_info.security_groups | length == 1
+          - firewall_old_name.security_groups == []
+    - name: Reapply rename idempotently
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_name }}'
+        rename: '{{ firewall_fixture_renamed }}'
+      register: firewall_rename_again
+    - name: Require repeated rename to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_rename_again is not changed
+    - name: Clear the complete child collection explicitly
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_renamed }}'
+        rules: []
+      register: firewall_clear_children
+    - name: Independently verify the empty child collection
+      ansible.proxmox.proxmox_firewall_security_group_info: &id004
+        name: '{{ firewall_fixture_renamed }}'
+      register: firewall_empty_info
+    - name: Require explicit empty to remove children
+      ansible.builtin.assert:
+        that:
+          - firewall_clear_children is changed
+          - firewall_empty_info.security_groups[0].rules == []
+    - name: Predict deletion
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_renamed }}'
+        state: absent
+      check_mode: true
+      register: firewall_delete_check
+    - name: Independently verify deletion prediction preserved the definition
+      ansible.proxmox.proxmox_firewall_security_group_info: *id004
+      register: firewall_before_delete
+    - name: Verify deletion prediction and non-mutation
+      ansible.builtin.assert:
+        that:
+          - firewall_delete_check is changed
+          - firewall_before_delete.security_groups | length == 1
+    - name: Delete the owned unused definition
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_renamed }}'
+        state: absent
+      register: firewall_deleted
+    - name: Independently verify deletion
+      ansible.proxmox.proxmox_firewall_security_group_info: *id004
+      register: firewall_after_delete
+    - name: Require actual removal
+      ansible.builtin.assert:
+        that:
+          - firewall_deleted is changed
+          - firewall_after_delete.security_groups == []
+    - name: Reapply deletion idempotently
+      ansible.proxmox.proxmox_firewall_security_group:
+        name: '{{ firewall_fixture_renamed }}'
+        state: absent
+      register: firewall_delete_again
+    - name: Require repeated deletion to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_delete_again is not changed
+  always:
+    - name: Clean and independently verify owned definitions
+      ansible.builtin.include_tasks: cleanup.yml
+      when: firewall_fixture_owned | bool

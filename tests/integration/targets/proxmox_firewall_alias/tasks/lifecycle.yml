@@ -1,0 +1,281 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset ownership for this scope
+  ansible.builtin.set_fact:
+    firewall_fixture_owned: false
+- name: Preflight source and rename identifiers with the public reader
+  ansible.proxmox.proxmox_firewall_alias_info:
+    name: '{{ item }}'
+    scope: '{{ firewall_context.scope }}'
+    node: '{{ firewall_context.node | default(omit) }}'
+    vmid: '{{ firewall_context.vmid | default(omit) }}'
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  register: firewall_preflight
+- name: Require both identifiers to be unused
+  ansible.builtin.assert:
+    that:
+      - firewall_preflight.results | map(attribute='aliases') | flatten | length == 0
+- name: Claim only preflighted absent identifiers
+  ansible.builtin.set_fact:
+    firewall_fixture_owned: true
+- name: Exercise owned alias lifecycle
+  block:
+    - name: Predict creation
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Owned Ansible firewall fixture
+        cidr: 192.0.2.1/32
+      check_mode: true
+      register: firewall_create_check
+    - name: Require a creation prediction
+      ansible.builtin.assert:
+        that:
+          - firewall_create_check is changed
+    - name: Independently verify check-mode non-mutation
+      ansible.proxmox.proxmox_firewall_alias_info: &id001
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+      register: firewall_before_create
+    - name: Require the fixture still absent
+      ansible.builtin.assert:
+        that:
+          - firewall_before_create.aliases == []
+    - name: Create the owned unused definition
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Owned Ansible firewall fixture
+        cidr: 192.0.2.1/32
+      register: firewall_created
+    - name: Independently read the created definition
+      ansible.proxmox.proxmox_firewall_alias_info:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        include_references: true
+      register: firewall_initial
+    - name: Verify creation and independent native state
+      ansible.builtin.assert:
+        that:
+          - firewall_created is changed
+          - firewall_initial is not changed
+          - firewall_initial.aliases | length == 1
+          - firewall_initial.aliases[0].name == firewall_fixture_name
+          - firewall_initial.aliases[0].comment == "Owned Ansible firewall fixture"
+    - name: Reapply creation idempotently
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Owned Ansible firewall fixture
+        cidr: 192.0.2.1/32
+      register: firewall_repeated
+    - name: Require the repeated creation to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_repeated is not changed
+    - name: Verify the resource-specific native reference
+      ansible.builtin.assert:
+        that:
+          - firewall_initial.references | selectattr('scope', 'equalto', ('dc' if firewall_context.scope == 'cluster'
+            else 'guest')) | list | length == 1
+          - (firewall_initial.references | selectattr('scope', 'equalto', ('dc' if firewall_context.scope == 'cluster'
+            else 'guest')) | first).ref == firewall_fixture_name
+    - name: Reject a stale native digest before normal or check-mode writes
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        digest: '0000000000000000000000000000000000000000'
+        comment: Updated Ansible firewall fixture
+        cidr: 2001:db8::1/128
+      check_mode: '{{ item }}'
+      loop:
+        - false
+        - true
+      register: firewall_stale
+      ignore_errors: true
+    - name: Require both stale requests to fail unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_stale.results | selectattr('failed', 'equalto', true) | list | length == 2
+          - firewall_stale.results | selectattr('changed', 'equalto', true) | list | length == 0
+    - name: Predict an update without changing the live definition
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Updated Ansible firewall fixture
+        cidr: 2001:db8::1/128
+      check_mode: true
+      register: firewall_update_check
+    - name: Independently read after predicting update
+      ansible.proxmox.proxmox_firewall_alias_info: *id001
+      register: firewall_after_prediction
+    - name: Require prediction and original live values
+      ansible.builtin.assert:
+        that:
+          - firewall_update_check is changed
+          - firewall_after_prediction.aliases[0].comment == "Owned Ansible firewall fixture"
+    - name: Apply address members or ordered-rule updates
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Updated Ansible firewall fixture
+        cidr: 2001:db8::1/128
+      register: firewall_updated
+    - name: Independently read the updated definition
+      ansible.proxmox.proxmox_firewall_alias_info: *id001
+      register: firewall_updated_info
+    - name: Verify updated description
+      ansible.builtin.assert:
+        that:
+          - firewall_updated is changed
+          - firewall_updated_info.aliases[0].comment == "Updated Ansible firewall fixture"
+    - name: Reapply the update idempotently
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: Updated Ansible firewall fixture
+        cidr: 2001:db8::1/128
+      register: firewall_update_again
+    - name: Require repeated update to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_update_again is not changed
+    - name: Verify IPv6 host-prefix normalization
+      ansible.builtin.assert:
+        that:
+          - firewall_updated_info.aliases[0].cidr == "2001:db8::1"
+    - name: Preserve omitted reconciliation properties
+      ansible.proxmox.proxmox_firewall_alias: *id001
+      register: firewall_omitted
+    - name: Require omission to preserve state
+      ansible.builtin.assert:
+        that:
+          - firewall_omitted is not changed
+    - name: Clear the description explicitly
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        comment: ''
+      register: firewall_clear_comment
+    - name: Independently read the cleared description
+      ansible.proxmox.proxmox_firewall_alias_info: *id001
+      register: firewall_cleared_info
+    - name: Verify empty description
+      ansible.builtin.assert:
+        that:
+          - firewall_clear_comment is changed
+          - firewall_cleared_info.aliases[0].comment | default('') == ''
+    - name: Rename the existing definition natively
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        rename: '{{ firewall_fixture_renamed }}'
+      register: firewall_renamed
+    - name: Independently read the rename destination
+      ansible.proxmox.proxmox_firewall_alias_info:
+        name: '{{ firewall_fixture_renamed }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+      register: firewall_renamed_info
+    - name: Independently verify the old name is absent
+      ansible.proxmox.proxmox_firewall_alias_info: *id001
+      register: firewall_old_name
+    - name: Verify native rename
+      ansible.builtin.assert:
+        that:
+          - firewall_renamed is changed
+          - firewall_renamed_info.aliases | length == 1
+          - firewall_old_name.aliases == []
+    - name: Reapply rename idempotently
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_name }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        rename: '{{ firewall_fixture_renamed }}'
+      register: firewall_rename_again
+    - name: Require repeated rename to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_rename_again is not changed
+    - name: Predict deletion
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_renamed }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        state: absent
+      check_mode: true
+      register: firewall_delete_check
+    - name: Independently verify deletion prediction preserved the definition
+      ansible.proxmox.proxmox_firewall_alias_info: &id002
+        name: '{{ firewall_fixture_renamed }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        include_references: true
+      register: firewall_before_delete
+    - name: Verify deletion prediction and non-mutation
+      ansible.builtin.assert:
+        that:
+          - firewall_delete_check is changed
+          - firewall_before_delete.aliases | length == 1
+    - name: Delete the owned unused definition
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_renamed }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        state: absent
+      register: firewall_deleted
+    - name: Independently verify deletion
+      ansible.proxmox.proxmox_firewall_alias_info: *id002
+      register: firewall_after_delete
+    - name: Require actual removal
+      ansible.builtin.assert:
+        that:
+          - firewall_deleted is changed
+          - firewall_after_delete.aliases == []
+          - firewall_after_delete.references | selectattr('scope', 'equalto', ('dc' if firewall_context.scope == 'cluster'
+            else 'guest')) | list | length == 0
+    - name: Reapply deletion idempotently
+      ansible.proxmox.proxmox_firewall_alias:
+        name: '{{ firewall_fixture_renamed }}'
+        scope: '{{ firewall_context.scope }}'
+        node: '{{ firewall_context.node | default(omit) }}'
+        vmid: '{{ firewall_context.vmid | default(omit) }}'
+        state: absent
+      register: firewall_delete_again
+    - name: Require repeated deletion to be unchanged
+      ansible.builtin.assert:
+        that:
+          - firewall_delete_again is not changed
+  always:
+    - name: Clean and independently verify owned definitions
+      ansible.builtin.include_tasks: cleanup.yml
+      when: firewall_fixture_owned | bool

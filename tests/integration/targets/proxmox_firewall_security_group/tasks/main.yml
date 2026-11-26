@@ -1,0 +1,27 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Exercise security group resource pair
+  module_defaults:
+    group/ansible.proxmox.proxmox:
+      api_user: '{{ proxmox_api_user | default(omit, true) }}'
+      api_password: '{{ proxmox_api_password | default(omit, true) }}'
+      api_token_id: '{{ proxmox_api_token_id | default(omit, true) }}'
+      api_token_secret: '{{ proxmox_api_token_secret | default(omit, true) }}'
+      api_otp: '{{ proxmox_api_otp | default(omit, true) }}'
+      ca_path: '{{ proxmox_ca_path | default(omit, true) }}'
+      api_host: '{{ proxmox_api_host }}'
+      api_port: '{{ proxmox_api_port | default(8006) }}'
+      validate_certs: '{{ proxmox_validate_certs | default(true) }}'
+  block:
+    - name: Select datacenter security-group scope
+      ansible.builtin.set_fact:
+        firewall_contexts:
+          - scope: cluster
+    - name: Exercise paired lifecycle and independent reads in every scope
+      ansible.builtin.include_tasks: lifecycle.yml
+      loop: '{{ firewall_contexts }}'
+      loop_control:
+        loop_var: firewall_context
+        label: '{{ firewall_context.scope }}'

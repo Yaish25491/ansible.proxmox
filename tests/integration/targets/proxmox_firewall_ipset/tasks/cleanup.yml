@@ -1,0 +1,50 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Reset cleanup failure evidence
+  ansible.builtin.set_fact:
+    firewall_cleanup_errors: []
+- name: Inspect and remove each owned name independently
+  ansible.builtin.include_tasks: cleanup_one.yml
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  loop_control:
+    loop_var: firewall_cleanup_name
+- name: Independently verify every owned identifier after cleanup
+  ansible.proxmox.proxmox_firewall_ipset_info:
+    name: '{{ item }}'
+    scope: '{{ firewall_context.scope }}'
+    node: '{{ firewall_context.node | default(omit) }}'
+    vmid: '{{ firewall_context.vmid | default(omit) }}'
+    include_references: true
+  loop: '{{ [firewall_fixture_name, firewall_fixture_renamed] }}'
+  register: firewall_cleanup_verified
+  ignore_errors: true
+- name: Independently confirm the qemu fixture still exists for cleanup verification
+  ansible.proxmox.proxmox_vm_info:
+    node: '{{ firewall_context.node }}'
+    vmid: '{{ firewall_context.vmid }}'
+  when: firewall_context.scope == 'qemu'
+  register: firewall_cleanup_qemu_parent
+  ignore_errors: true
+  no_log: true
+- name: Independently confirm the lxc fixture still exists for cleanup verification
+  ansible.proxmox.proxmox_lxc_info:
+    node: '{{ firewall_context.node }}'
+    vmid: '{{ firewall_context.vmid }}'
+  when: firewall_context.scope == 'lxc'
+  register: firewall_cleanup_lxc_parent
+  ignore_errors: true
+  no_log: true
+- name: Expose failed cleanup attempts or remaining definitions
+  ansible.builtin.assert:
+    that:
+      - firewall_cleanup_errors | length == 0
+      - firewall_cleanup_verified is succeeded
+      - firewall_cleanup_verified.results | map(attribute='ipsets') | flatten | length == 0
+      - firewall_cleanup_verified.results | map(attribute='references') | flatten | selectattr('scope', 'equalto', ('dc'
+        if firewall_context.scope == 'cluster' else 'guest')) | list | length == 0
+      - firewall_context.scope != 'qemu' or (firewall_cleanup_qemu_parent is succeeded and firewall_cleanup_qemu_parent.vms
+        | length == 1)
+      - firewall_context.scope != 'lxc' or (firewall_cleanup_lxc_parent is succeeded and firewall_cleanup_lxc_parent.lxcs
+        | length == 1)

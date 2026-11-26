@@ -1,0 +1,27 @@
+# Copyright (c) Ansible Project
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+- name: Read the owned name before cleanup
+  ansible.proxmox.proxmox_firewall_security_group_info:
+    name: '{{ firewall_cleanup_name }}'
+  register: firewall_cleanup_read
+  ignore_errors: true
+- name: Require recognized ownership metadata before removal
+  ansible.builtin.set_fact:
+    firewall_cleanup_safe: '{{ firewall_cleanup_read is succeeded and (firewall_cleanup_read.security_groups | length
+      == 0 or ((firewall_cleanup_read.security_groups[0].comment | default('''')) in ['''', ''Owned Ansible firewall
+      fixture'', ''Updated Ansible firewall fixture''] and (firewall_cleanup_read.security_groups[0].rules | selectattr(''enable'',
+      ''defined'') | selectattr(''enable'') | list | length == 0))) }}'
+- name: Remove only a recognized owned definition
+  ansible.proxmox.proxmox_firewall_security_group:
+    name: '{{ firewall_cleanup_name }}'
+    state: absent
+    force: true
+  when: firewall_cleanup_safe | bool
+  register: firewall_cleanup_removed
+  ignore_errors: true
+- name: Retain every cleanup refusal or failed removal
+  ansible.builtin.set_fact:
+    firewall_cleanup_errors: '{{ firewall_cleanup_errors + ([firewall_cleanup_name] if (not firewall_cleanup_safe | bool
+      or firewall_cleanup_removed is failed) else []) }}'
